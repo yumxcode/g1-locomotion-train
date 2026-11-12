@@ -263,10 +263,41 @@ def stage3_export(args, env, ppo_runner, run_dir_name, exp_name):
             report['onnx_vs_torch_max_abs_diff'] = None
     print(json.dumps(report, indent=2))
 
+    # dump runtime interface parameters (ground truth for INTERFACE.md)
+    interface_params = {
+        'dof_names': list(env.dof_names),
+        'num_dof': int(env.num_dof),
+        'default_dof_pos': env.default_dof_pos.squeeze(0).cpu(),
+        'dof_pos_limits': env.dof_pos_limits.cpu(),
+        'torque_limits': env.torque_limits.cpu(),
+        'action_scale': float(env.cfg.control.action_scale),
+        'decimation': int(env.cfg.control.decimation),
+        'sim_dt': float(env.cfg.sim.dt),
+        'policy_dt': float(env.dt),
+        'clip_actions': float(env.cfg.normalization.clip_actions),
+        'clip_observations': float(env.cfg.normalization.clip_observations),
+        'command_ranges': {k: list(v) for k, v in env.command_ranges.items()},
+        'init_state_pos': list(env.cfg.init_state.pos),
+    }
+    # nominal gains from config (env.p_gains may be per-env randomized)
+    p_nom = torch.zeros(env.num_dof)
+    d_nom = torch.zeros(env.num_dof)
+    for i, name in enumerate(env.dof_names):
+        for k, v in env.cfg.control.stiffness.items():
+            if k in name:
+                p_nom[i] = v
+        for k, v in env.cfg.control.damping.items():
+            if k in name:
+                d_nom[i] = v
+    interface_params['p_gains_nominal'] = p_nom
+    interface_params['d_gains_nominal'] = d_nom
+    print('[gm] interface params: dof_names =', interface_params['dof_names'])
+
     # distribute artifacts to platform-scanned dirs
     for t in targets:
         os.makedirs(t, exist_ok=True)
         shutil.copy2(jit_path_src, os.path.join(t, 'policy_lstm_1.pt'))
+        torch.save({'interface_params': interface_params}, os.path.join(t, 'interface_params.pt'))
         if onnx_ok:
             shutil.copy2(onnx_path_src, os.path.join(t, 'policy_lstm_1.onnx'))
             with open(onnx_path_src, 'rb') as f:
