@@ -356,8 +356,11 @@ def parse_load_ckpts():
 
 
 def main():
-    args = get_args()
+    # extract --load_ckpt BEFORE get_args(): this gymutil build uses strict parse_args
+    # and aborts on unknown arguments
     load_ckpts = parse_load_ckpts()
+    sys.argv = [a for a in sys.argv if not a.startswith('--load_ckpt')]
+    args = get_args()
     if load_ckpts:
         print('=' * 70)
         print('LOAD-AND-EVAL MODE:', load_ckpts)
