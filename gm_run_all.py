@@ -186,8 +186,9 @@ def stage2_eval(args, env, ppo_runner, exp_name, tag=''):
     }
     saved = []
     suffix = ('_' + tag) if tag else ''
-    for base in [os.getcwd(), LEGGED_GYM_ROOT_DIR, ROOT]:
-        d = os.path.join(base, 'logs', exp_name, 'gm_play')
+    out_top = os.path.join(os.getcwd(), 'output')
+    for base in [os.getcwd(), LEGGED_GYM_ROOT_DIR, ROOT, out_top]:
+        d = os.path.join(base, 'logs', exp_name, 'gm_play') if base != out_top else out_top
         os.makedirs(d, exist_ok=True)
         p = os.path.join(d, 'eval_results{}.pt'.format(suffix))
         torch.save(payload, p)
@@ -320,7 +321,9 @@ def stage3_export(args, env, ppo_runner, run_dir_name, exp_name, tag=''):
 
     # distribute artifacts to platform-scanned dirs
     suffix = ('_' + tag) if tag else ''
-    for t in targets:
+    out_top = os.path.join(os.getcwd(), 'output')
+    os.makedirs(out_top, exist_ok=True)
+    for t in targets + [out_top]:
         os.makedirs(t, exist_ok=True)
         shutil.copy2(jit_path_src, os.path.join(t, 'policy_lstm_1{}.pt'.format(suffix)))
         torch.save({'interface_params': interface_params}, os.path.join(t, 'interface_params{}.pt'.format(suffix)))
@@ -330,10 +333,7 @@ def stage3_export(args, env, ppo_runner, run_dir_name, exp_name, tag=''):
                 torch.save({'onnx_bytes': f.read(), 'jit_vs_torch_max_abs_diff': diff_jit,
                             'report': report}, os.path.join(t, 'policy_lstm_1{}_onnx.pt'.format(suffix)))
         torch.save({'export_report': report}, os.path.join(t, 'export_report{}.pt'.format(suffix)))
-    # output/ top-level channel for the final checkpoint
-    out_dir = os.path.join(os.getcwd(), 'output')
-    os.makedirs(out_dir, exist_ok=True)
-    print('[gm] artifacts mirrored to', targets)
+    print('[gm] artifacts mirrored to', targets + [out_top])
     return report
 
 
@@ -356,6 +356,13 @@ def parse_load_ckpts():
             print('[gm] --load_ckpt requires =path (comma separated)')
             sys.exit(2)
     return out
+
+
+def settle_for_sdk_upload(seconds=150):
+    """Give the platform SDK time to detect+upload the artifacts before the task exits."""
+    print('[gm] waiting {} s for SDK artifact upload ...'.format(seconds))
+    import time as _time
+    _time.sleep(seconds)
 
 
 def main():
@@ -381,6 +388,7 @@ def main():
         with open(os.path.join(os.getcwd(), 'gm_final_summary.json'), 'w') as f:
             json.dump(summaries, f, indent=2)
         print('[gm] FINAL SUMMARY:', json.dumps(summaries, indent=2))
+        settle_for_sdk_upload()
         return
 
     env, ppo_runner, train_cfg, run_dir_name = stage1_train(args)
@@ -391,6 +399,7 @@ def main():
     print('[gm] FINAL SUMMARY:', json.dumps(final, indent=2))
     with open(os.path.join(os.getcwd(), 'gm_final_summary.json'), 'w') as f:
         json.dump(final, f, indent=2)
+    settle_for_sdk_upload()
 
 
 if __name__ == '__main__':
