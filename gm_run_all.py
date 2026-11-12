@@ -258,7 +258,14 @@ def stage3_export(args, env, ppo_runner, run_dir_name, exp_name):
               'jit_pass_lt_1e-5': bool(diff_jit < 1e-5), 'onnx_ok': onnx_ok}
     if onnx_ok:
         try:
-            import onnxruntime as ort
+            try:
+                import onnxruntime as ort
+            except ImportError:
+                # image lacks onnxruntime; try a quiet pip install (container has network)
+                import subprocess
+                print('[gm] installing onnxruntime for numeric check ...')
+                subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-q', 'onnxruntime'])
+                import onnxruntime as ort
             sess = ort.InferenceSession(onnx_path_src)
             h = np.zeros((1, 1, actor_critic.memory_a.rnn.hidden_size), dtype=np.float32)
             c = np.zeros_like(h)
