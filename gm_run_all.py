@@ -86,6 +86,7 @@ def stage2_eval(args, env, ppo_runner, exp_name, tag=''):
     print('=' * 70)
     actor_critic = ppo_runner.alg.actor_critic
     actor_critic.eval()
+    actor_critic.to(env.device)  # stage3 of a previous checkpoint may have left it on cpu
 
     n = env.num_envs
     device = env.device
@@ -268,12 +269,14 @@ def stage3_export(args, env, ppo_runner, run_dir_name, exp_name, tag=''):
                 subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-q', 'onnxruntime'])
                 import onnxruntime as ort
             sess = ort.InferenceSession(onnx_path_src)
-            h = np.zeros((1, 1, actor_critic.memory_a.rnn.hidden_size), dtype=np.float32)
-            c = np.zeros_like(h)
+            # build inputs as plain python lists -> np.asarray (avoids broken torch<->numpy bridge)
+            hid = actor_critic.memory_a.rnn.hidden_size
+            h_np = np.zeros((1, 1, hid), dtype=np.float32)
+            c_np = np.zeros((1, 1, hid), dtype=np.float32)
             outs = []
             for t in range(T):
-                a, h, c = sess.run(None, {'obs': stream[t].numpy().astype(np.float32),
-                                          'h0': h, 'c0': c})
+                obs_np = np.asarray(stream[t][0].tolist(), dtype=np.float32).reshape(1, -1)
+                a, h_np, c_np = sess.run(None, {'obs': obs_np, 'h0': h_np, 'c0': c_np})
                 outs.append(a)
             # [g1-baseline] avoid torch.tensor(ndarray): broken numpy bridge on this image
             out_onnx = torch.tensor([[float(x) for x in a[0]] for a in outs])
