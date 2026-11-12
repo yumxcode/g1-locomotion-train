@@ -151,7 +151,10 @@ def stage2_eval(args, env, ppo_runner, exp_name):
 
         rmse_env = (err_sq / cnt.clamp(min=1.0)).sqrt()  # per-episode RMSE over xy, base frame
         rmse_mean = float(rmse_env.mean())
+        rmse_std = float(rmse_env.std())
+        rmse_max = float(rmse_env.max())
         no_fall = float((~fall).float().mean())
+        num_falls = int(fall.sum())
         cmd_series_t = torch.stack(series_cmd) if series_cmd else torch.zeros(0)
         vel_series_t = torch.stack(series_vel) if series_vel else torch.zeros(0)
 
@@ -159,10 +162,10 @@ def stage2_eval(args, env, ppo_runner, exp_name):
         'num_episodes': int(n),
         'episode_length_s': 10.0,
         'rmse_lin_vel_xy_mean': rmse_mean,
-        'rmse_lin_vel_xy_std': float(rmse_env.std()),
-        'rmse_lin_vel_xy_max': float(rmse_env.max()),
+        'rmse_lin_vel_xy_std': rmse_std,
+        'rmse_lin_vel_xy_max': rmse_max,
         'no_fall_rate': no_fall,
-        'num_falls': int(fall.sum()),
+        'num_falls': num_falls,
         'pass_rmse_le_0.3': bool(rmse_mean <= 0.3),
         'pass_no_fall_ge_0.9': bool(no_fall >= 0.9),
         'protocol': ('fixed cmds uniform vx,vy,wz in [-1,1]^3 with |v_xy|<0.2 zeroed; '
