@@ -145,19 +145,26 @@ def stage2_eval(args, env, ppo_runner, exp_name):
             fall |= newly & (~env.time_out_buf)
             done_first |= env.reset_buf
             if dones.any():
-                actor_critic.reset(dones)
+                # only reset the actor memory (critic memory is never used at inference
+                # and its hidden_states stays None -> actor_critic.reset() would crash)
+                actor_critic.memory_a.reset(dones)
 
-    rmse_env = (err_sq / cnt.clamp(min=1.0)).sqrt()  # per-episode RMSE over xy, base frame
+        rmse_env = (err_sq / cnt.clamp(min=1.0)).sqrt()  # per-episode RMSE over xy, base frame
+        rmse_mean = float(rmse_env.mean())
+        no_fall = float((~fall).float().mean())
+        cmd_series_t = torch.stack(series_cmd) if series_cmd else torch.zeros(0)
+        vel_series_t = torch.stack(series_vel) if series_vel else torch.zeros(0)
+
     results = {
         'num_episodes': int(n),
         'episode_length_s': 10.0,
-        'rmse_lin_vel_xy_mean': float(rmse_env.mean()),
+        'rmse_lin_vel_xy_mean': rmse_mean,
         'rmse_lin_vel_xy_std': float(rmse_env.std()),
         'rmse_lin_vel_xy_max': float(rmse_env.max()),
-        'no_fall_rate': float((~fall).float().mean()),
+        'no_fall_rate': no_fall,
         'num_falls': int(fall.sum()),
-        'pass_rmse_le_0.3': bool(rmse_env.mean() <= 0.3),
-        'pass_no_fall_ge_0.9': bool((~fall).float().mean() >= 0.9),
+        'pass_rmse_le_0.3': bool(rmse_mean <= 0.3),
+        'pass_no_fall_ge_0.9': bool(no_fall >= 0.9),
         'protocol': ('fixed cmds uniform vx,vy,wz in [-1,1]^3 with |v_xy|<0.2 zeroed; '
                      'base-frame xy velocity; per-episode RMSE over xy dims then mean over episodes; '
                      'fall = early termination (non-timeout) within 10 s; '
@@ -170,8 +177,8 @@ def stage2_eval(args, env, ppo_runner, exp_name):
         'results': results,
         'rmse_per_episode': rmse_env.cpu(),
         'fall_flags': fall.cpu(),
-        'cmd_series': torch.stack(series_cmd).cpu() if series_cmd else torch.zeros(0),
-        'vel_series': torch.stack(series_vel).cpu() if series_vel else torch.zeros(0),
+        'cmd_series': cmd_series_t.cpu(),
+        'vel_series': vel_series_t.cpu(),
     }
     saved = []
     for base in [os.getcwd(), LEGGED_GYM_ROOT_DIR, ROOT]:

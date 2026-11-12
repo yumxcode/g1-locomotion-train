@@ -8,11 +8,23 @@ Two candidate routes were smoked on the remote 24G GPU (4090D):
 
 | Route | Image | Stack | Smoke task | Result |
 |---|---|---|---|---|
-| (a) IsaacGym preview-4 + unitree_rl_gym | BJX00000001 / V000412 (`isaac-gym-v20`) | Py3.8 + torch 2.4.1 + vendored rsl_rl v1.0.2 | TASK_20261112_503/506 | _pending_ |
-| (b) IsaacLab 2.2.1 official G1 velocity | BJX00000102 / V000418 (`isaac-lab2.2.1-v2`) | IsaacSim 5.0 + isaaclab | TASK_20261112_505 | _pending_ |
+| (a) IsaacGym preview-4 + unitree_rl_gym | BJX00000001 / V000412 (`isaac-gym-v20`) | Py3.8 + torch 2.4.1 + vendored rsl_rl v1.0.2 | TASK_20261112_503/506/514/516 | **train 30 it OK (85k env-steps/s), ckpt upload OK**; platform-image fixes documented below |
+| (b) IsaacLab 2.2.1 official G1 velocity | BJX00000102 / V000418 (`isaac-lab2.2.1-v2`) | IsaacSim 5.0 + isaaclab | TASK_20261112_505 | app launch OK, `Isaac-Velocity-Flat-G1-v0` created + reset OK; step failed on a one-line issue (numpy action vs torch); NOT retried |
 
-Decision criteria: fastest passing official-example smoke, complete G1 assets,
-hour-scale training throughput. **Decision: _pending_** (rationale to be added).
+**Decision: route (a).** Evidence:
+1. Full chain (train → platform checkpoint upload) verified end-to-end; measured
+   throughput 85,457 env-steps/s (4096 envs, 1.15 s/iter) → 10k iters ≈ 3.2 h, well within ≤6 h.
+2. G1 assets complete: 12-DoF URDF + MuJoCo XML in-repo
+   (`resources/robots/g1_description/`), upstream `deploy/deploy_mujoco` is a ready
+   sim2sim reference for the evaluation side.
+3. Route (b) reached env creation/reset but is a 29-DoF ManagerBased env (baseline
+   spec is 12-DoF), has heavier cold-start and a far more complex observation/action
+   contract — worse fit for the baseline and the INTERFACE.md hand-off. Smoke scripts
+   remain in `yumxcode/g1-isaaclab-smoke`.
+4. Route (a) smoke failures (503/506/514) were platform-image issues (torch 2.4.1
+   py38 is numpy2-compiled while env numpy is 1.x → broken torch↔numpy bridge;
+   inference-tensor inplace after rsl_rl rollout), fixed in-repo (commits 3303ab4,
+   b575a59) — framework-independent fixes.
 
 ## 2. Environment / task configuration
 
@@ -36,11 +48,13 @@ Full interface: see INTERFACE.md.
 
 | taskId | Purpose | GPU time | Cost (¥) | commit | Result |
 |---|---|---|---|---|---|
-| TASK_20261112_503 | route-a smoke #1 | ~1 min | ~0.10 | ecfc343 | failed (numpy bridge, fixed) |
-| TASK_20261112_504 | duplicate of 503 (create retry) | 0 | 0 | — | deleted (never run) |
-| TASK_20261112_505 | route-b smoke (IsaacLab) | _pending_ | _pending_ | — | _pending_ |
-| TASK_20261112_506 | route-a smoke #2 | _pending_ | _pending_ | 07cda6a | _pending_ |
-| _pending_ | full baseline training | ≤6 h | — | — | — |
+| TASK_20261112_503 | route-a smoke #1 | 63 s | 0.10 | ecfc343 | failed: numpy bridge in runner (fixed) |
+| TASK_20261112_504 | duplicate of 503 (create retry) | 0 | 0 | — | deleted before run |
+| TASK_20261112_505 | route-b smoke (IsaacLab 2.2.1) | 29 s | 0.05 | — | env created/reset OK, step needs torch action; not retried |
+| TASK_20261112_506 | route-a smoke #2 | 57 s | 0.09 | 07cda6a | failed: numpy bridge in tensorboard add_scalar (fixed) |
+| TASK_20261112_514 | route-a smoke #3 | 116 s | 0.19 | 3303ab4 | train+ckpt-upload OK (85k steps/s); eval failed: inference-tensor inplace (fixed) |
+| TASK_20261112_516 | route-a smoke #4 (full chain) | _pending_ | _pending_ | b575a59 | _pending_ |
+| _pending_ | full baseline training (~8000 it) | ≤2.7 h (budget ≤6 h) | ~15.5 | — | — |
 
 Rate: 1×4090D 24G = ¥5.76/h (goodsId ESKU000001).
 
