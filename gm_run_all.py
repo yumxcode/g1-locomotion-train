@@ -80,7 +80,7 @@ def stage1_train(args):
     return env, ppo_runner, train_cfg, run_dir_name
 
 
-def stage2_eval(args, env, ppo_runner, exp_name):
+def stage2_eval(args, env, ppo_runner, exp_name, tag=''):
     print('=' * 70)
     print('STAGE 2: ACCEPTANCE EVALUATION (in-simulator)')
     print('=' * 70)
@@ -184,10 +184,11 @@ def stage2_eval(args, env, ppo_runner, exp_name):
         'vel_series': vel_series_t.cpu(),
     }
     saved = []
+    suffix = ('_' + tag) if tag else ''
     for base in [os.getcwd(), LEGGED_GYM_ROOT_DIR, ROOT]:
         d = os.path.join(base, 'logs', exp_name, 'gm_play')
         os.makedirs(d, exist_ok=True)
-        p = os.path.join(d, 'eval_results.pt')
+        p = os.path.join(d, 'eval_results{}.pt'.format(suffix))
         torch.save(payload, p)
         saved.append(p)
     print('[gm] eval results saved:', saved)
@@ -208,7 +209,7 @@ class OnnxLSTM(torch.nn.Module):
         return self.actor(out.squeeze(0)), h, c
 
 
-def stage3_export(args, env, ppo_runner, run_dir_name, exp_name):
+def stage3_export(args, env, ppo_runner, run_dir_name, exp_name, tag=''):
     print('=' * 70)
     print('STAGE 3: POLICY EXPORT (TorchScript + ONNX) & CONSISTENCY CHECK')
     print('=' * 70)
@@ -315,16 +316,17 @@ def stage3_export(args, env, ppo_runner, run_dir_name, exp_name):
     print('[gm] interface params: dof_names =', interface_params['dof_names'])
 
     # distribute artifacts to platform-scanned dirs
+    suffix = ('_' + tag) if tag else ''
     for t in targets:
         os.makedirs(t, exist_ok=True)
-        shutil.copy2(jit_path_src, os.path.join(t, 'policy_lstm_1.pt'))
-        torch.save({'interface_params': interface_params}, os.path.join(t, 'interface_params.pt'))
+        shutil.copy2(jit_path_src, os.path.join(t, 'policy_lstm_1{}.pt'.format(suffix)))
+        torch.save({'interface_params': interface_params}, os.path.join(t, 'interface_params{}.pt'.format(suffix)))
         if onnx_ok:
-            shutil.copy2(onnx_path_src, os.path.join(t, 'policy_lstm_1.onnx'))
+            shutil.copy2(onnx_path_src, os.path.join(t, 'policy_lstm_1{}.onnx'.format(suffix)))
             with open(onnx_path_src, 'rb') as f:
                 torch.save({'onnx_bytes': f.read(), 'jit_vs_torch_max_abs_diff': diff_jit,
-                            'report': report}, os.path.join(t, 'policy_lstm_1_onnx.pt'))
-        torch.save({'export_report': report}, os.path.join(t, 'export_report.pt'))
+                            'report': report}, os.path.join(t, 'policy_lstm_1{}_onnx.pt'.format(suffix)))
+        torch.save({'export_report': report}, os.path.join(t, 'export_report{}.pt'.format(suffix)))
     # output/ top-level channel for the final checkpoint
     out_dir = os.path.join(os.getcwd(), 'output')
     os.makedirs(out_dir, exist_ok=True)
@@ -332,8 +334,49 @@ def stage3_export(args, env, ppo_runner, run_dir_name, exp_name):
     return report
 
 
+def make_env_and_runner(args):
+    """Env + runner without training (for --load_ckpt evaluation mode)."""
+    env, env_cfg = task_registry.make_env(name=args.task, args=args)
+    ppo_runner, train_cfg = task_registry.make_alg_runner(env=env, name=args.task, args=args)
+    exp_name = train_cfg.runner.experiment_name
+    run_dir_name = os.path.basename(ppo_runner.log_dir)
+    return env, ppo_runner, train_cfg, run_dir_name
+
+
+def parse_load_ckpts():
+    """Extract --load_ckpt=path1,path2 from sys.argv (legged_gym's get_args doesn't know it)."""
+    out = []
+    for a in sys.argv[1:]:
+        if a.startswith('--load_ckpt='):
+            out.extend(p for p in a[len('--load_ckpt='):].split(',') if p)
+        elif a == '--load_ckpt':
+            print('[gm] --load_ckpt requires =path (comma separated)')
+            sys.exit(2)
+    return out
+
+
 def main():
     args = get_args()
+    load_ckpts = parse_load_ckpts()
+    if load_ckpts:
+        print('=' * 70)
+        print('LOAD-AND-EVAL MODE:', load_ckpts)
+        print('=' * 70)
+        env, ppo_runner, train_cfg, run_dir_name = make_env_and_runner(args)
+        exp_name = train_cfg.runner.experiment_name
+        summaries = {}
+        for ck in load_ckpts:
+            tag = os.path.splitext(os.path.basename(ck))[0].replace('model_', 'model')
+            print('[gm] loading checkpoint:', ck, '-> tag', tag)
+            ppo_runner.load(ck, load_optimizer=False)
+            results, _ = stage2_eval(args, env, ppo_runner, exp_name, tag=tag)
+            report = stage3_export(args, env, ppo_runner, run_dir_name, exp_name, tag=tag)
+            summaries[tag] = {'eval': results, 'export': report}
+        with open(os.path.join(os.getcwd(), 'gm_final_summary.json'), 'w') as f:
+            json.dump(summaries, f, indent=2)
+        print('[gm] FINAL SUMMARY:', json.dumps(summaries, indent=2))
+        return
+
     env, ppo_runner, train_cfg, run_dir_name = stage1_train(args)
     exp_name = train_cfg.runner.experiment_name
     results, _ = stage2_eval(args, env, ppo_runner, exp_name)
