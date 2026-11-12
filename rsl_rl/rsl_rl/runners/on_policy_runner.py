@@ -117,8 +117,10 @@ class OnPolicyRunner:
                         cur_reward_sum += rewards
                         cur_episode_length += 1
                         new_ids = (dones > 0).nonzero(as_tuple=False)
-                        rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
-                        lenbuffer.extend(cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
+                        # [g1-baseline] .tolist() instead of .numpy().tolist(): the platform image's
+                        # torch (2.4.1, py38) is numpy2-compiled while numpy is 1.x -> bridge broken
+                        rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().tolist())
+                        lenbuffer.extend(cur_episode_length[new_ids][:, 0].cpu().tolist())
                         cur_reward_sum[new_ids] = 0
                         cur_episode_length[new_ids] = 0
 
