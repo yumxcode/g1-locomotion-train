@@ -254,7 +254,8 @@ def stage3_export(args, env, ppo_runner, run_dir_name, exp_name):
                 a, h, c = sess.run(None, {'obs': stream[t].numpy().astype(np.float32),
                                           'h0': h, 'c0': c})
                 outs.append(a)
-            out_onnx = torch.tensor(np.concatenate(outs, 0))
+            # [g1-baseline] avoid torch.tensor(ndarray): broken numpy bridge on this image
+            out_onnx = torch.tensor([[float(x) for x in a[0]] for a in outs])
             diff_onnx = float((out_torch - out_onnx).abs().max())
             report['onnx_vs_torch_max_abs_diff'] = diff_onnx
             report['onnx_pass_lt_1e-5'] = bool(diff_onnx < 1e-5)

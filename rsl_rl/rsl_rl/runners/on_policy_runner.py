@@ -160,23 +160,25 @@ class OnPolicyRunner:
                         ep_info[key] = ep_info[key].unsqueeze(0)
                     infotensor = torch.cat((infotensor, ep_info[key].to(self.device)))
                 value = torch.mean(infotensor)
-                self.writer.add_scalar('Episode/' + key, value, locs['it'])
+                # [g1-baseline] float(): platform torch has a broken numpy bridge
+                self.writer.add_scalar('Episode/' + key, float(value), locs['it'])
                 ep_string += f"""{f'Mean episode {key}:':>{pad}} {value:.4f}\n"""
         mean_std = self.alg.actor_critic.std.mean()
         fps = int(self.num_steps_per_env * self.env.num_envs / (locs['collection_time'] + locs['learn_time']))
 
-        self.writer.add_scalar('Loss/value_function', locs['mean_value_loss'], locs['it'])
-        self.writer.add_scalar('Loss/surrogate', locs['mean_surrogate_loss'], locs['it'])
-        self.writer.add_scalar('Loss/learning_rate', self.alg.learning_rate, locs['it'])
-        self.writer.add_scalar('Policy/mean_noise_std', mean_std.item(), locs['it'])
-        self.writer.add_scalar('Perf/total_fps', fps, locs['it'])
-        self.writer.add_scalar('Perf/collection time', locs['collection_time'], locs['it'])
-        self.writer.add_scalar('Perf/learning_time', locs['learn_time'], locs['it'])
+        # [g1-baseline] float() wrapping: add_scalar on torch tensors hits the broken numpy bridge
+        self.writer.add_scalar('Loss/value_function', float(locs['mean_value_loss']), locs['it'])
+        self.writer.add_scalar('Loss/surrogate', float(locs['mean_surrogate_loss']), locs['it'])
+        self.writer.add_scalar('Loss/learning_rate', float(self.alg.learning_rate), locs['it'])
+        self.writer.add_scalar('Policy/mean_noise_std', float(mean_std.item()), locs['it'])
+        self.writer.add_scalar('Perf/total_fps', int(fps), locs['it'])
+        self.writer.add_scalar('Perf/collection time', float(locs['collection_time']), locs['it'])
+        self.writer.add_scalar('Perf/learning_time', float(locs['learn_time']), locs['it'])
         if len(locs['rewbuffer']) > 0:
-            self.writer.add_scalar('Train/mean_reward', statistics.mean(locs['rewbuffer']), locs['it'])
-            self.writer.add_scalar('Train/mean_episode_length', statistics.mean(locs['lenbuffer']), locs['it'])
-            self.writer.add_scalar('Train/mean_reward/time', statistics.mean(locs['rewbuffer']), self.tot_time)
-            self.writer.add_scalar('Train/mean_episode_length/time', statistics.mean(locs['lenbuffer']), self.tot_time)
+            self.writer.add_scalar('Train/mean_reward', float(statistics.mean(locs['rewbuffer'])), locs['it'])
+            self.writer.add_scalar('Train/mean_episode_length', float(statistics.mean(locs['lenbuffer'])), locs['it'])
+            self.writer.add_scalar('Train/mean_reward/time', float(statistics.mean(locs['rewbuffer'])), self.tot_time)
+            self.writer.add_scalar('Train/mean_episode_length/time', float(statistics.mean(locs['lenbuffer'])), self.tot_time)
 
         str = f" \033[1m Learning iteration {locs['it']}/{self.current_learning_iteration + locs['num_learning_iterations']} \033[0m "
 
