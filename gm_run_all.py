@@ -100,49 +100,52 @@ def stage2_eval(args, env, ppo_runner, exp_name):
     # sample one fixed command per env from the training distribution:
     # uniform(lin_vel_x in [-1,1], lin_vel_y in [-1,1], ang_vel_yaw in [-1,1]),
     # linear part zeroed if |v_xy| < 0.2 (same rule as _resample_commands).
-    vx = torch.empty(n).uniform_(-1.0, 1.0)
-    vy = torch.empty(n).uniform_(-1.0, 1.0)
-    wz = torch.empty(n).uniform_(-1.0, 1.0)
-    small = (vx ** 2 + vy ** 2).sqrt() < 0.2
-    vx[small] = 0.0
-    vy[small] = 0.0
+    # NOTE: the entire evaluation runs inside inference_mode: env buffers hold
+    # inference tensors after rsl_rl's rollout, inplace updates outside the mode
+    # would raise "Inplace update to inference tensor".
+    with torch.inference_mode():
+        vx = torch.empty(n).uniform_(-1.0, 1.0)
+        vy = torch.empty(n).uniform_(-1.0, 1.0)
+        wz = torch.empty(n).uniform_(-1.0, 1.0)
+        small = (vx ** 2 + vy ** 2).sqrt() < 0.2
+        vx[small] = 0.0
+        vy[small] = 0.0
 
-    obs = env.reset()
-    if isinstance(obs, tuple):
-        obs = obs[0]
-    # fresh zero memory for evaluation (LSTM auto-zero-initializes when hidden is None)
-    actor_critic.memory_a.hidden_states = None
-    actor_critic.memory_c.hidden_states = None
-    env.commands[:, 0] = vx.to(device)
-    env.commands[:, 1] = vy.to(device)
-    env.commands[:, 2] = wz.to(device)
+        obs = env.reset()
+        if isinstance(obs, tuple):
+            obs = obs[0]
+        # fresh zero memory for evaluation (LSTM auto-zero-initializes when hidden is None)
+        actor_critic.memory_a.hidden_states = None
+        actor_critic.memory_c.hidden_states = None
+        env.commands[:, 0] = vx.to(device)
+        env.commands[:, 1] = vy.to(device)
+        env.commands[:, 2] = wz.to(device)
 
-    T = env.max_episode_length
-    err_sq = torch.zeros(n, device=device)
-    cnt = torch.zeros(n, device=device)
-    fall = torch.zeros(n, dtype=torch.bool, device=device)
-    done_first = torch.zeros(n, dtype=torch.bool, device=device)
-    series_cmd = []
-    series_vel = []
+        T = env.max_episode_length
+        err_sq = torch.zeros(n, device=device)
+        cnt = torch.zeros(n, device=device)
+        fall = torch.zeros(n, dtype=torch.bool, device=device)
+        done_first = torch.zeros(n, dtype=torch.bool, device=device)
+        series_cmd = []
+        series_vel = []
 
-    for t in range(T):
-        with torch.no_grad():
+        for t in range(T):
             actions = actor_critic.act_inference(obs.detach())
-        obs, _, rews, dones, infos = env.step(actions.detach())
-        active = ~done_first
-        if active.any():
-            cmd = env.commands[active, :2]
-            vel = env.base_lin_vel[active, :2]
-            err_sq[active] += ((cmd - vel) ** 2).sum(dim=1)
-            cnt[active] += 2.0
-            if t % 10 == 0:  # 5 Hz logging (policy 50 Hz)
-                series_cmd.append(env.commands[:, :3].clone())
-                series_vel.append(env.base_lin_vel.clone())
-        newly = env.reset_buf & active
-        fall |= newly & (~env.time_out_buf)
-        done_first |= env.reset_buf
-        if dones.any():
-            actor_critic.reset(dones)
+            obs, _, rews, dones, infos = env.step(actions.detach())
+            active = ~done_first
+            if active.any():
+                cmd = env.commands[active, :2]
+                vel = env.base_lin_vel[active, :2]
+                err_sq[active] += ((cmd - vel) ** 2).sum(dim=1)
+                cnt[active] += 2.0
+                if t % 10 == 0:  # 5 Hz logging (policy 50 Hz)
+                    series_cmd.append(env.commands[:, :3].clone())
+                    series_vel.append(env.base_lin_vel.clone())
+            newly = env.reset_buf & active
+            fall |= newly & (~env.time_out_buf)
+            done_first |= env.reset_buf
+            if dones.any():
+                actor_critic.reset(dones)
 
     rmse_env = (err_sq / cnt.clamp(min=1.0)).sqrt()  # per-episode RMSE over xy, base frame
     results = {
