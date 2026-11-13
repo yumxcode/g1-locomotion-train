@@ -40,7 +40,7 @@ def main():
     cfg.domain_rand.randomize_gains = False         # nominal PD 60/1.5
     cfg.domain_rand.randomize_action_delay = False  # no delay
     cfg.domain_rand.push_robots = False
-    env = task_registry.make_env(args.task, args=args, env_cfg=cfg)
+    env, _ = task_registry.make_env(args.task, args=args, env_cfg=cfg)
     ppo_runner, train_cfg = task_registry.make_alg_runner(env=env, name=args.task, args=args)
     exp_name = train_cfg.runner.experiment_name
     print('[nominal] domain randomization DISABLED: friction/mass/PD/delay/push all nominal')
