@@ -94,7 +94,7 @@ Rate: 1×4090D 24G = ¥5.76/h (goodsId ESKU000001). All costs from `gm task info
 | TASK_20261113_095 | resume-from-5000 attempt | ~25 min | ~2.4 | 2629246 | FAILED: first PPO update destroyed policy (ep_len 678→46, std 1.69→2.4 entropy spiral) |
 | TASK_20261113_096 | bisect: load-eval platform model_5000 | ~8 min | ~0.8 | 475c70d | **weights proven good** (RMSE 0.654 / no-fall 95.19%, exact reproduction) — resume path at fault |
 | TASK_20261113_113 | full baseline v5 (tracking 1.5, 10000 it) | ~86 min | ~8.3 | ee166fa | FAILED: plateau ep_len≈64 (v4 same-iter ~300-678), stopped at it5050 |
-| **TASK_20261113_124** | **full baseline v6 (feet_air_time 2.0, 10000 it)** | _TBD_ | _TBD_ | 28499a7 | _TBD_ (it2000: ep_len 297 = 2.87× v4 same-iter) |
+| **TASK_20261113_124** | **full baseline v6 (feet_air_time 2.0, 10000 it) — FINAL** | 7896 s | 12.63 | 28499a7 | finished; **no-fall 99.90 % ✅ / RMSE 0.407 ❌**; jit 0.0 / onnx 5.7e-6; ep_len 910 (max 992), tracking plateau ~0.22-0.28 after it6500 |
 
 ### Predecessor attempt (2026-11-12, kept for the record / fallback)
 
@@ -126,14 +126,29 @@ Rate: 1×4090D 24G = ¥5.76/h (goodsId ESKU000001). All costs from `gm task info
   per-step total +0.023 > 0. The 12-DoF task never hit A/B/C because it has no arms
   (bigger joint inertias, fewer joint-sum terms).
 
-## 6. Results (v4 primary run — filled after TASK_20261113_043 completes)
+## 6. Results
 
-- Throughput: ~85,000 env-steps/s (23 DoF, 4096 envs, self-collision off) → 1.16 s/iter
-- Full run: _TBD_ iterations, _TBD_ wall time, _TBD_ cost
-- Learning curve: ep_len 12 (it0) → 39 (it191) → _TBD_; CSV in deliverables
-- Acceptance (in-sim, protocol in INTERFACE.md §11): RMSE _TBD_ m/s (≤0.3 required),
-  no-fall _TBD_% (≥90% required), _TBD_ episodes
-- Export consistency: jit _TBD_, onnx _TBD_ (max abs diff, <1e-5 required)
+**Primary baseline: v6 = TASK_20261113_124** (commit 28499a7, `g1_23dof` task,
+feet_air_time 2.0, 10,000 iters, checkpoint `model_10000`).
+
+- Throughput: **131,760 env-steps/s** (23 DoF, 4096 envs, self-collision off),
+  0.75 s/iter — calibrates the algorithm-side anchor (55–110k estimate: 23-DoF
+  actual is 132k, i.e. ABOVE the estimated band, 12-DoF was ~96k)
+- Full run: 10,000 iters, **7,894 s (2.19 h) wall**, ¥12.63 (≈$1.8) — well within
+  the ≤6 h GPU budget; total 23dof campaign ≈ ¥35 across all runs+diagnostics
+- Learning curve (CSV `v6_task124_curves.csv`): ep_len 12 → 297 (it2000, 2.87× v4
+  same-iter) → 712 (it3000) → 910 end (max 992); tracking reward plateau ~0.22–0.28
+  after it6500 (converged, not under-trained)
+- **Acceptance (in-sim, protocol in INTERFACE.md §11, 4096 episodes × 10 s):**
+  - no-fall rate **99.90 %** ✅ (≥ 90 % required)
+  - lin-vel tracking RMSE **0.407 m/s** ❌ (≤ 0.3 required, +36 % miss)
+- **Export consistency:** TorchScript **0.0**, ONNX **5.7e-6** (both < 1e-5 ✅)
+- Trajectory of configs: v1 fail (self-collision) → v2/v3 fail (reward floor / PD
+  chatter) → v4 (5000 it): no-fall 95.3 % / RMSE 0.657 → v5 (tracking 1.5): plateau
+  → **v6 (feet_air_time 2.0, 10k it): no-fall 99.9 % / RMSE 0.407**. The remaining
+  RMSE gap is the converged capability of a minimal contract-constrained PPO baseline
+  (no gait clock, uniform PD 60/1.5, free-form gait); see §3.5 for the mechanism
+  analysis and the documented levers for the follow-up algorithm work (CES-PPO etc.).
 
 ## 7. Reproduction
 

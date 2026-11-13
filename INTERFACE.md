@@ -211,12 +211,23 @@ frozen for the episode; obs noise and pushes off; per-env training domain-rand s
 (friction/mass/PD/delay) kept; RMSE computed per episode over base-frame xy velocity
 vs command, then averaged over episodes. Fall = non-timeout termination.
 
-| Check | Result |
-|---|---|
-| lin-vel tracking RMSE (mean over episodes) | _TBD_ (target ≤ 0.3 m/s) |
-| no-fall rate (10 s) | _TBD_ (target ≥ 90 %) |
-| TorchScript vs torch (100-step random stream, max abs diff) | _TBD_ (< 1e-5) |
-| ONNX vs torch (same stream, max abs diff) | _TBD_ (< 1e-5) |
+Baseline = `g1_23dof-baseline-v6-10000it` (TASK_20261113_124, commit 28499a7,
+model_10000 = primary checkpoint; robot mass 32.107 kg; 10,000 iters × 4096 envs):
+
+| Check | Result | Target | Verdict |
+|---|---|---|---|
+| no-fall rate (10 s, 4096 episodes) | **99.90 %** | ≥ 90 % | ✅ PASS |
+| lin-vel tracking RMSE (mean over episodes) | **0.407 m/s** (std 0.251, max 1.63) | ≤ 0.3 m/s | ❌ MISS (+36 %) |
+| TorchScript vs torch (100-step random stream, max abs diff) | **0.0** | < 1e-5 | ✅ PASS |
+| ONNX vs torch (same stream, max abs diff) | **5.7e-6** | < 1e-5 | ✅ PASS |
+
+RMSE decomposition note: episodes are sampled with commands uniform in
+vx, vy ∈ [−1,1]², wz ∈ [−1,1] (lateral + backward + high-speed included) under kept
+training domain randomization (friction as low as 0.1); the policy tracks forward
+commands best and lateral/backward at speed worst. The tracking reward plateaued at
+~0.22–0.28 after iter 6500 (see training_curves), i.e. the miss is a converged
+capability limit of this minimal PPO baseline under the contract-v0 constraints
+(no gait clock in obs, uniform PD 60/1.5), not an under-trained checkpoint.
 
 ## 12. Assets
 
