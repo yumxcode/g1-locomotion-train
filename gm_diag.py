@@ -1,8 +1,7 @@
 #!/usr/bin/env python
-"""Diagnostic: why does g1_23dof terminate at spawn?
+"""Diagnostic v2: replicate the training action path (random ~N(0,1)) and
+classify termination causes per policy step.
 
-Loads the env, resets, and steps zero actions, printing per-body contact
-forces (top offenders), base pose stats and termination causes at each step.
 Run: gm-run g1-locomotion-train/gm_diag.py --task=g1_23dof --headless --num_envs=64
 """
 import os
@@ -24,34 +23,40 @@ def main():
     env, _ = task_registry.make_env(name=args.task, args=args)
 
     body_names = list(env.gym.get_actor_rigid_body_names(env.envs[0], env.actor_handles[0]))
-    print('[diag] num_bodies', env.num_bodies, 'num_dof', env.num_dof)
-    print('[diag] bodies:', body_names)
     print('[diag] termination bodies:', [body_names[i] for i in env.termination_contact_indices.tolist()])
-    print('[diag] feet:', [body_names[i] for i in env.feet_indices.tolist()])
-    print('[diag] dof_names:', list(env.dof_names))
-    print('[diag] p_gains[0]:', env.p_gains[0].tolist() if env.p_gains.dim() > 1 else env.p_gains.tolist())
-    print('[diag] torque_limits:', env.torque_limits.tolist())
 
+    torch.manual_seed(0)
+    n_termin = len(env.termination_contact_indices)
     with torch.inference_mode():
         obs = env.reset()
-        # state right after reset, before any step
-        env.gym.refresh_rigid_body_state_tensor(env.sim)
-        print('[diag] post-reset base z: mean %.3f min %.3f max %.3f' % (
-            env.root_states[:, 2].mean(), env.root_states[:, 2].min(), env.root_states[:, 2].max()))
-        print('[diag] post-reset dof_pos[0]:', [round(x, 3) for x in env.dof_pos[0].tolist()])
-
-        zero = torch.zeros(env.num_envs, env.num_actions, device=env.device)
-        for t in range(6):
-            env.step(zero)
+        std = 1.0
+        # training-style random actions; also re-randomize via reset bookkeeping
+        for t in range(10):
+            actions = torch.randn(env.num_envs, env.num_actions, device=env.device) * std
+            env.step(actions)
             env.gym.refresh_rigid_body_state_tensor(env.sim)
             fn = torch.norm(env.contact_forces[:, :, :], dim=-1)  # [n, bodies]
+            # termination cause decomposition (mirrors check_termination)
+            term_contact = (fn[:, env.termination_contact_indices] > 1.0).any(dim=1)
+            roll_bad = env.rpy[:, 0].abs() > 0.8
+            pitch_bad = env.rpy[:, 1].abs() > 1.0
+            newly = env.reset_buf & ~env.time_out_buf
+            # among envs that just terminated, which cause fired
+            n_term = int(newly.sum())
+            c_contact = int((term_contact & newly).sum())
+            c_roll = int((roll_bad & newly).sum())
+            c_pitch = int((pitch_bad & newly).sum())
+            # contact on each termination body among ALL envs
+            term_forces = fn[:, env.termination_contact_indices]
+            per_body = [float(term_forces[:, k].max()) for k in range(n_termin)]
+            # biggest contact anywhere
             fn_max = fn.max(dim=0).values
-            top = sorted(range(env.num_bodies), key=lambda i: -fn_max[i])[:6]
-            print('[diag] step %d: resets %d (timeout %d) | roll|%.2f pitch|%.2f | z mean %.3f | top contacts: %s' % (
-                t, int(env.reset_buf.sum()), int(env.time_out_buf.sum()),
+            top = sorted(range(env.num_bodies), key=lambda i: -fn_max[i])[:5]
+            print('[diag] step %d: newly_terminated %d (contact %d, roll %d, pitch %d) | term-body maxN %s | rpy max %.2f/%.2f | top: %s' % (
+                t, n_term, c_contact, c_roll, c_pitch,
+                ['%.1f' % x for x in per_body],
                 float(env.rpy[:, 0].abs().max()), float(env.rpy[:, 1].abs().max()),
-                float(env.root_states[:, 2].mean()),
-                ', '.join('%s %.1fN' % (body_names[i], float(fn_max[i])) for i in top)))
+                ', '.join('%s %.0fN' % (body_names[i], float(fn_max[i])) for i in top)))
     print('[diag] done')
 
 
