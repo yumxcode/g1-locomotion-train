@@ -123,7 +123,10 @@ class G1_23dofCfg( LeggedRobotCfg ):
         base_height_target = 0.78
 
         class scales( LeggedRobotCfg.rewards.scales ):
-            tracking_lin_vel = 1.0
+            # [g1-23dof] tracking 1.0 -> 1.5: v4@5000it reached standing (no-fall 95%)
+            # but velocity tracking lagged (RMSE 0.657); stronger positive tracking
+            # pull accelerates walking emergence (positive term, no floor-clip risk).
+            tracking_lin_vel = 1.5
             tracking_ang_vel = 0.5
             lin_vel_z = -2.0
             ang_vel_xy = -0.05
