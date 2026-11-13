@@ -221,6 +221,12 @@ model_10000 = primary checkpoint; robot mass 32.107 kg; 10,000 iters × 4096 env
 | TorchScript vs torch (100-step random stream, max abs diff) | **0.0** | < 1e-5 | ✅ PASS |
 | ONNX vs torch (same stream, max abs diff) | **5.7e-6** | < 1e-5 | ✅ PASS |
 
+Supplementary nominal-domain eval (audit round-1 item 2; same protocol with ALL domain
+randomization disabled — friction 1.0, nominal mass/PD, no delay; task
+TASK_20261113_182): **RMSE 0.443 m/s, no-fall 100.0%**. Reported as supplementary
+evidence only; the preregistered numbers above (domain-rand kept) remain the
+acceptance reference.
+
 RMSE decomposition note: episodes are sampled with commands uniform in
 vx, vy ∈ [−1,1]², wz ∈ [−1,1] (lateral + backward + high-speed included) under kept
 training domain randomization (friction as low as 0.1); the policy tracks forward

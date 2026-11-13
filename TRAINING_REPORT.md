@@ -94,7 +94,11 @@ Rate: 1×4090D 24G = ¥5.76/h (goodsId ESKU000001). All costs from `gm task info
 | TASK_20261113_095 | resume-from-5000 attempt | ~25 min | ~2.4 | 2629246 | FAILED: first PPO update destroyed policy (ep_len 678→46, std 1.69→2.4 entropy spiral) |
 | TASK_20261113_096 | bisect: load-eval platform model_5000 | ~8 min | ~0.8 | 475c70d | **weights proven good** (RMSE 0.654 / no-fall 95.19%, exact reproduction) — resume path at fault |
 | TASK_20261113_113 | full baseline v5 (tracking 1.5, 10000 it) | ~86 min | ~8.3 | ee166fa | FAILED: plateau ep_len≈64 (v4 same-iter ~300-678), stopped at it5050 |
-| **TASK_20261113_124** | **full baseline v6 (feet_air_time 2.0, 10000 it) — FINAL** | 7896 s | 12.63 | 28499a7 | finished; **no-fall 99.90 % ✅ / RMSE 0.407 ❌**; jit 0.0 / onnx 5.7e-6; ep_len 910 (max 992), tracking plateau ~0.22-0.28 after it6500 |
+| **TASK_20261113_124** | **full baseline v6 (feet_air_time 2.0, 10000 it) — PRIMARY** | 7896 s | 12.63 | 28499a7 | finished; **no-fall 99.90 % ✅ / RMSE 0.407 ❌**; jit 0.0 / onnx 5.7e-6; ep_len 910 (max 992), tracking plateau ~0.22-0.28 after it6500 |
+| TASK_20261113_180 | nominal eval attempt 1 | 52 s | 0.08 | 3d37039^ | failed fast: make_env tuple bug (fixed) |
+| TASK_20261113_182 | **supplementary nominal-domain eval of v6 model_10000** (domain rand OFF, same protocol) | ~2 min | ~0.2 | 3d37039 | RMSE **0.443**, no-fall **100.0 %** (supplementary only; preregistered numbers stay) |
+| TASK_20261113_181 | full baseline v7 attempt (feet_air_time 3.0, 12000 it) | 1334 s | 2.14 | ecf7cfe | **killed by infra**: concurrent task 182 scheduled on same GPU (pit_9e74a116); trajectory healthy at it1500 (ep_len 127.6 = 2.1× v6 same-it) |
+| TASK_20261113_209 | **full baseline v7b (feet_air_time 3.0, 12000 it, serial relaunch)** | _TBD_ | _TBD_ | ecf7cfe | audit round-1 lever (a); running |
 
 ### Predecessor attempt (2026-11-12, kept for the record / fallback)
 
