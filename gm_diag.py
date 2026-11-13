@@ -1,6 +1,10 @@
 #!/usr/bin/env python
-"""Diagnostic v2: replicate the training action path (random ~N(0,1)) and
-classify termination causes per policy step.
+"""Diagnostic v3: per-term reward decomposition.
+
+Two trajectories, per policy step we evaluate every reward function and print the
+time-average of each term (scale already includes dt) plus the unclipped per-step
+total. Goal: quantify which penalties eat the alive bonus during (a) quiet standing
+(zero actions) and (b) a random policy (collapse trajectory), before the next full run.
 
 Run: gm-run g1-locomotion-train/gm_diag.py --task=g1_23dof --headless --num_envs=64
 """
@@ -18,45 +22,48 @@ from legged_gym.envs import *  # noqa
 from legged_gym.utils import get_args, task_registry
 
 
+def decompose(env, actions_fn, label, n_steps=30):
+    with torch.inference_mode():
+        env.reset()
+        sums = {name: 0.0 for name in env.reward_names}
+        tot = 0.0
+        steps_alive = []
+        for t in range(n_steps):
+            a = actions_fn(t)
+            env.step(a)
+            step_tot = 0.0
+            for name, fn in zip(env.reward_names, env.reward_functions):
+                v = float((fn() * env.reward_scales[name]).mean())
+                sums[name] += v
+                step_tot += v
+            tot += step_tot
+            steps_alive.append(float(env.episode_length_buf.mean()))
+    print('[diag] ==== %s: per-term time-mean over %d steps (scale incl. dt) ====' % (label, n_steps))
+    for name in sorted(sums, key=lambda k: sums[k]):
+        print('[diag]   %-22s %+.5f' % (name, sums[name] / n_steps))
+    print('[diag]   %-22s %+.5f   << unclipped per-step TOTAL' % ('TOTAL', tot / n_steps))
+    print('[diag]   mean episode_length_buf over run: %.1f (last %.1f)' % (
+        sum(steps_alive) / len(steps_alive), steps_alive[-1]))
+    return tot / n_steps
+
+
 def main():
     args = get_args()
     env, _ = task_registry.make_env(name=args.task, args=args)
+    print('[diag] reward scales (post-dt):', {k: round(v, 8) for k, v in env.reward_scales.items()})
+    print('[diag] only_positive_rewards:', env.cfg.rewards.only_positive_rewards)
 
-    body_names = list(env.gym.get_actor_rigid_body_names(env.envs[0], env.actor_handles[0]))
-    print('[diag] termination bodies:', [body_names[i] for i in env.termination_contact_indices.tolist()])
-
+    zero = lambda t: torch.zeros(env.num_envs, env.num_actions, device=env.device)
     torch.manual_seed(0)
-    n_termin = len(env.termination_contact_indices)
-    with torch.inference_mode():
-        obs = env.reset()
-        std = 1.0
-        # training-style random actions; also re-randomize via reset bookkeeping
-        for t in range(10):
-            actions = torch.randn(env.num_envs, env.num_actions, device=env.device) * std
-            env.step(actions)
-            env.gym.refresh_rigid_body_state_tensor(env.sim)
-            fn = torch.norm(env.contact_forces[:, :, :], dim=-1)  # [n, bodies]
-            # termination cause decomposition (mirrors check_termination)
-            term_contact = (fn[:, env.termination_contact_indices] > 1.0).any(dim=1)
-            roll_bad = env.rpy[:, 0].abs() > 0.8
-            pitch_bad = env.rpy[:, 1].abs() > 1.0
-            newly = env.reset_buf & ~env.time_out_buf
-            # among envs that just terminated, which cause fired
-            n_term = int(newly.sum())
-            c_contact = int((term_contact & newly).sum())
-            c_roll = int((roll_bad & newly).sum())
-            c_pitch = int((pitch_bad & newly).sum())
-            # contact on each termination body among ALL envs
-            term_forces = fn[:, env.termination_contact_indices]
-            per_body = [float(term_forces[:, k].max()) for k in range(n_termin)]
-            # biggest contact anywhere
-            fn_max = fn.max(dim=0).values
-            top = sorted(range(env.num_bodies), key=lambda i: -fn_max[i])[:5]
-            print('[diag] step %d: newly_terminated %d (contact %d, roll %d, pitch %d) | term-body maxN %s | rpy max %.2f/%.2f | top: %s' % (
-                t, n_term, c_contact, c_roll, c_pitch,
-                ['%.1f' % x for x in per_body],
-                float(env.rpy[:, 0].abs().max()), float(env.rpy[:, 1].abs().max()),
-                ', '.join('%s %.0fN' % (body_names[i], float(fn_max[i])) for i in top)))
+
+    def rand(t):
+        return torch.randn(env.num_envs, env.num_actions, device=env.device)
+
+    a = decompose(env, zero, 'A: quiet standing (zero actions)')
+    b = decompose(env, rand, 'B: random policy N(0,1)')
+    print('[diag] VERDICT: standing per-step total %+.5f -> %s' % (
+        a, 'PASS (>0)' if a > 0 else 'FAIL (<=0): alive bonus still dominated'))
+    print('[diag] random per-step total %+.5f (expected negative during collapse)' % b)
     print('[diag] done')
 
 
