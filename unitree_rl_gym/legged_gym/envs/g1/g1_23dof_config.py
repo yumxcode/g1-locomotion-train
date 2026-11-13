@@ -119,13 +119,19 @@ class G1_23dofCfg( LeggedRobotCfg ):
             ang_vel_xy = -0.05
             orientation = -1.0
             base_height = -10.0
-            dof_acc = -2.5e-7
-            dof_vel = -1e-3
+            # [g1-23dof] joint-count-proportional penalties HALVED vs the 12-DoF task:
+            # 23 joints sum ~2x the 12-DoF penalty mass and the softer uniform PD
+            # (60/1.5) yields larger accelerations; with upstream values the per-step
+            # total is negative for a random policy and only_positive_rewards clips
+            # it to zero, erasing the survival gradient (run TASK_20261113_012:
+            # reward 0.0, lr collapsed to 2e-5, ep_len declined 26->15 over 500 iters).
+            dof_acc = -1.0e-7
+            dof_vel = -5e-4
             feet_air_time = 1.0     # [g1-23dof] free-form gait reward (no phase clock in obs)
             collision = 0.0
-            action_rate = -0.01
+            action_rate = -0.005
             dof_pos_limits = -5.0
-            alive = 0.15
+            alive = 1.0             # [g1-23dof] 0.15 -> 1.0: survival bonus must dominate
             hip_pos = -1.0
             contact_no_vel = -0.2
             feet_swing_height = -20.0
