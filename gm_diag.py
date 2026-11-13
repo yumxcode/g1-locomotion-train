@@ -67,6 +67,15 @@ def main():
     print('[diag] VERDICT: standing per-step total %+.5f -> %s' % (
         a, 'PASS (>0)' if a > 0 else 'FAIL (<=0): alive bonus still dominated'))
     print('[diag] random per-step total %+.5f (expected negative during collapse)' % b)
+    # per-joint dof_vel RMS localization (last standing segment)
+    with torch.inference_mode():
+        env.reset()
+        for _ in range(10):
+            env.step(torch.zeros(env.num_envs, env.num_actions, device=env.device))
+        rms = env.dof_vel.pow(2).mean(dim=0).sqrt()
+        top = sorted(range(env.num_dof), key=lambda i: -rms[i])[:8]
+        print('[diag] per-joint dof_vel RMS (top 8):',
+              ', '.join('%s %.1f' % (env.dof_names[i], float(rms[i])) for i in top))
     print('[diag] done')
 
 

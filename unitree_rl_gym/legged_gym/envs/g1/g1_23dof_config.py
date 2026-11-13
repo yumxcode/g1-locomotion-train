@@ -78,22 +78,23 @@ class G1_23dofCfg( LeggedRobotCfg ):
                      'elbow': 60,
                      'wrist_roll': 60,
                      }  # [N*m/rad]
-        # [g1-23dof] Kd raised 1.5 -> 5.0 (contract v0 assumed 1.5): with kd=1.5 the
-        # explicit 200 Hz PD chatters at ~14 rad/s RMS joint velocity (diag
-        # TASK_20261113_038: dof_vel penalty -0.046/step during quiet standing, zero
-        # actions fall in ~16-30 steps). Documented deviation in INTERFACE.md §5.
-        damping = {  'hip_pitch': 5.0,
-                     'hip_roll': 5.0,
-                     'hip_yaw': 5.0,
-                     'knee': 5.0,
-                     'ankle_pitch': 5.0,
-                     'ankle_roll': 5.0,
-                     'waist_yaw': 5.0,
-                     'shoulder_pitch': 5.0,
-                     'shoulder_roll': 5.0,
-                     'shoulder_yaw': 5.0,
-                     'elbow': 5.0,
-                     'wrist_roll': 5.0,
+        # [g1-23dof] Kd stays at the contract value 1.5. The chatter seen in diag
+        # TASK_20261113_038/041 is explicit-PD integration instability on the
+        # small-inertia arm/wrist joints (kd*dt/I ~ 0.75 at kd=1.5, >2 at kd=5 made it
+        # WORSE: -0.096/step). Fixed via asset armature below instead — PD gains now
+        # match contract v0 exactly.
+        damping = {  'hip_pitch': 1.5,
+                     'hip_roll': 1.5,
+                     'hip_yaw': 1.5,
+                     'knee': 1.5,
+                     'ankle_pitch': 1.5,
+                     'ankle_roll': 1.5,
+                     'waist_yaw': 1.5,
+                     'shoulder_pitch': 1.5,
+                     'shoulder_roll': 1.5,
+                     'shoulder_yaw': 1.5,
+                     'elbow': 1.5,
+                     'wrist_roll': 1.5,
                      }  # [N*m*s/rad]
         action_scale = 0.25
         decimation = 4
@@ -110,6 +111,11 @@ class G1_23dofCfg( LeggedRobotCfg ):
         # torso with 200-500 N (diag TASK_20261113_009), which lands on the termination
         # body torso_link and resets every episode within ~2 policy steps.
         self_collisions = 1 # 1 to disable, 0 to enable...bitwise filter
+        # [g1-23dof] rotor inertia added to every DOF: stabilizes explicit PD on the
+        # small-inertia wrist/elbow joints (see damping note above). Physically the
+        # actuator rotor inertia; documented in INTERFACE.md (evaluation side may add
+        # the same armature in MuJoCo; MuJoCo implicit damping is stable without it).
+        armature = 0.01
         flip_visual_attachments = False
 
     class rewards( LeggedRobotCfg.rewards ):
