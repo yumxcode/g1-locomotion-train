@@ -19,7 +19,7 @@
 | 6 | dof_vel ×0.05 | identical (§3) | ✅ confirmed |
 | 7 | prev action raw (unscaled) | identical (§3) | ✅ confirmed |
 | 8 | action q_target = clip(default_q + 0.25·a, joint limits) | identical (§4); limits from URDF §4 table | ✅ confirmed |
-| 9 | PD kp=60 / kd=1.5 (all joints) | identical, uniform for all 23 joints (§5) | ✅ confirmed |
+| 9 | PD kp=60 / kd=1.5 (all joints) | kp=60 identical; **Kd = 5.0** (§5) | ⚠️ kd modified |
 | 10 | torque limit = URDF effort 88/139/50/25 N·m | identical (§4 table, verified at runtime) | ✅ confirmed |
 | 11 | sim dt 0.005, decimation 4 → policy 50 Hz | identical (§1) | ✅ confirmed |
 | 12 | asset g1_23dof_rev_1_0, 32.107 kg | identical URDF/MJCF (§12) | ✅ confirmed |
@@ -27,7 +27,13 @@
 | 14 | (implicit) no obs/action clip beyond documented | obs & action clip ±100 (framework default, effectively inactive) (§1) | ✅ confirmed |
 | 15 | (assumed) self-collisions in training sim | **training sim DISABLES self-collision** (§8 note) | ⚠️ only deviation |
 
-All items confirmed except #15: the training simulator disables self-collision
+Deviations from v0 (both documented in-place):
+- **#9 Kd**: v0 assumed 1.5; the trained policy uses **Kd = 5.0** with Kp = 60.
+  With kd=1.5 the explicit 200 Hz PD chatters at ~14 rad/s RMS joint velocity
+  (diagnostic TASK_20261113_038) and even zero-action standing falls within
+  ~16–30 policy steps. The evaluation side must apply Kd=5.0 (or its override
+  mechanism) to reproduce the training dynamics.
+- **#15**: the training simulator disables self-collision
 because at the zero arm pose the upper arm sits flush against the torso contour and
 arm-torso contact forces (200–500 N under random actions) would otherwise land on the
 termination body. The evaluation side should either disable arm-torso collision or
@@ -125,7 +131,9 @@ differs.)
 
 ## 5. PD control (200 Hz)
 
-Uniform gains for **all 23 joints**: `Kp = 60 N·m/rad`, `Kd = 1.5 N·m·s/rad`.
+Uniform gains for **all 23 joints**: `Kp = 60 N·m/rad`, `Kd = 5.0 N·m·s/rad`
+(v0 assumed Kd=1.5; raised because kd=1.5 is underdamped for the 32 kg G1 under
+explicit 200 Hz PD — see §0 item 9).
 Torque clipped per joint to `τ_max` (§4). Control type: position (`control_type = 'P'`).
 
 ## 6. Commands

@@ -78,18 +78,22 @@ class G1_23dofCfg( LeggedRobotCfg ):
                      'elbow': 60,
                      'wrist_roll': 60,
                      }  # [N*m/rad]
-        damping = {  'hip_pitch': 1.5,
-                     'hip_roll': 1.5,
-                     'hip_yaw': 1.5,
-                     'knee': 1.5,
-                     'ankle_pitch': 1.5,
-                     'ankle_roll': 1.5,
-                     'waist_yaw': 1.5,
-                     'shoulder_pitch': 1.5,
-                     'shoulder_roll': 1.5,
-                     'shoulder_yaw': 1.5,
-                     'elbow': 1.5,
-                     'wrist_roll': 1.5,
+        # [g1-23dof] Kd raised 1.5 -> 5.0 (contract v0 assumed 1.5): with kd=1.5 the
+        # explicit 200 Hz PD chatters at ~14 rad/s RMS joint velocity (diag
+        # TASK_20261113_038: dof_vel penalty -0.046/step during quiet standing, zero
+        # actions fall in ~16-30 steps). Documented deviation in INTERFACE.md §5.
+        damping = {  'hip_pitch': 5.0,
+                     'hip_roll': 5.0,
+                     'hip_yaw': 5.0,
+                     'knee': 5.0,
+                     'ankle_pitch': 5.0,
+                     'ankle_roll': 5.0,
+                     'waist_yaw': 5.0,
+                     'shoulder_pitch': 5.0,
+                     'shoulder_roll': 5.0,
+                     'shoulder_yaw': 5.0,
+                     'elbow': 5.0,
+                     'wrist_roll': 5.0,
                      }  # [N*m*s/rad]
         action_scale = 0.25
         decimation = 4
