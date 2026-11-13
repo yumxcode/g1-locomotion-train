@@ -1,6 +1,6 @@
 # INTERFACE.md — G1 (23-DoF) Velocity-Command Walking Policy
 
-**Version:** 1.0 (contract-v0 aligned baseline PPO, experiment `g1_23dof`) · **Training repo:** `yumxcode/g1-locomotion-train` @ `b4853f9`
+**Version:** 1.1 (contract-v0 aligned baseline PPO, experiment `g1_23dof`, run `g1_23dof-baseline-v6-10000it`) · **Training repo:** `yumxcode/g1-locomotion-train` @ `28499a7` (docs @64b0252)
 **Robot:** Unitree G1 `g1_23dof_rev_1_0` — 23 actuated DoF (12 leg + 1 waist + 10 arm), total mass 32.107 kg
 **This document is the single contract for the evaluation side. No other source is needed.**
 (The legacy 12-DoF baseline from the crashed predecessor attempt is archived in `INTERFACE_12DOF.md`.)

@@ -1,6 +1,6 @@
 # TRAINING_REPORT.md — G1 23-DoF Velocity PPO Baseline (contract-v0 aligned)
 
-**Primary run:** `g1_23dof-baseline-v4-5000it` (TASK_20261113_043) · repo commit `4f14510`
+**Primary run:** `g1_23dof-baseline-v6-10000it` (TASK_20261113_124) · repo commit `28499a7` (docs @64b0252)
 **Legacy:** the crashed predecessor attempt's 12-DoF baseline is preserved (§6).
 
 ## 1. Framework decision

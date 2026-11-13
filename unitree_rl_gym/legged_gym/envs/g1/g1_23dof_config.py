@@ -141,7 +141,7 @@ class G1_23dofCfg( LeggedRobotCfg ):
             # only active when |cmd|>0.1 (standing path untouched — v4 lesson);
             # strengthens stepping incentive, the clock-less equivalent of the 12-DoF
             # task's phase-locked contact reward that drove its fast gait emergence.
-            feet_air_time = 2.0
+            feet_air_time = 3.0  # [g1-23dof] v7: 2.0 -> 3.0 (audit round-1 lever (a)); single-variable change vs v6
             collision = 0.0
             action_rate = -0.005
             dof_pos_limits = -5.0
