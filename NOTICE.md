@@ -33,3 +33,14 @@ It bundles third-party open-source projects with minimal, clearly-marked modific
 - `gm_run_all.py` — gradmotion platform entry: train -> in-sim acceptance eval ->
   TorchScript/ONNX export with consistency check.
 - `README.md`, `INTERFACE.md`, `TRAINING_REPORT.md` — documentation.
+
+## [g1-23dof] additions (contract-v0 baseline, 2026-11-13)
+
+- `legged_gym/envs/g1/g1_23dof_{env,config}.py` — new task `g1_23dof`:
+  23-DoF G1 (`g1_23dof_rev_1_0.urdf`), 78-dim observation in evaluation-contract-v0
+  order `[cmd | ang_vel | gravity | dof_pos | dof_vel | prev_action]` (no gait clock),
+  feedforward MLP policy, uniform PD Kp=60/Kd=1.5, q_target clipped to joint limits
+  (contract-v0 action semantics). Reward deltas vs 12-DoF task: phase-locked `contact`
+  disabled (clock unobserved), standard `feet_air_time` enabled instead.
+- `gm_run_all.py` — export/eval paths extended to feedforward policies
+  (`policy_1.pt` TorchScript, `obs->action` ONNX; LSTM path unchanged).

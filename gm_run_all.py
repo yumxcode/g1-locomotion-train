@@ -33,6 +33,7 @@ sys.path.insert(1, os.path.join(ROOT, 'unitree_rl_gym'))
 import isaacgym  # noqa: F401  must be imported before legged_gym torch usage
 import torch
 import numpy as np
+import copy
 
 from legged_gym.envs import *  # noqa: F401,F403
 from legged_gym.utils import get_args, task_registry
@@ -87,6 +88,7 @@ def stage2_eval(args, env, ppo_runner, exp_name, tag=''):
     actor_critic = ppo_runner.alg.actor_critic
     actor_critic.eval()
     actor_critic.to(env.device)  # stage3 of a previous checkpoint may have left it on cpu
+    is_recurrent = hasattr(actor_critic, 'memory_a')  # [g1-23dof] MLP has no memory
 
     n = env.num_envs
     device = env.device
@@ -116,8 +118,9 @@ def stage2_eval(args, env, ppo_runner, exp_name, tag=''):
         if isinstance(obs, tuple):
             obs = obs[0]
         # fresh zero memory for evaluation (LSTM auto-zero-initializes when hidden is None)
-        actor_critic.memory_a.hidden_states = None
-        actor_critic.memory_c.hidden_states = None
+        if is_recurrent:
+            actor_critic.memory_a.hidden_states = None
+            actor_critic.memory_c.hidden_states = None
         env.commands[:, 0] = vx.to(device)
         env.commands[:, 1] = vy.to(device)
         env.commands[:, 2] = wz.to(device)
@@ -146,9 +149,10 @@ def stage2_eval(args, env, ppo_runner, exp_name, tag=''):
             fall |= newly & (~env.time_out_buf)
             done_first |= env.reset_buf
             if dones.any():
-                # only reset the actor memory (critic memory is never used at inference
-                # and its hidden_states stays None -> actor_critic.reset() would crash)
-                actor_critic.memory_a.reset(dones)
+                if is_recurrent:
+                    # only reset the actor memory (critic memory is never used at inference
+                    # and its hidden_states stays None -> actor_critic.reset() would crash)
+                    actor_critic.memory_a.reset(dones)
 
         rmse_env = (err_sq / cnt.clamp(min=1.0)).sqrt()  # per-episode RMSE over xy, base frame
         rmse_mean = float(rmse_env.mean())
@@ -211,6 +215,17 @@ class OnnxLSTM(torch.nn.Module):
         return self.actor(out.squeeze(0)), h, c
 
 
+class OnnxMLP(torch.nn.Module):
+    """ONNX-exportable wrapper for feedforward policies: obs -> action."""
+
+    def __init__(self, actor_critic):
+        super().__init__()
+        self.actor = copy.deepcopy(actor_critic.actor).float()
+
+    def forward(self, obs):
+        return self.actor(obs)
+
+
 def stage3_export(args, env, ppo_runner, run_dir_name, exp_name, tag=''):
     print('=' * 70)
     print('STAGE 3: POLICY EXPORT (TorchScript + ONNX) & CONSISTENCY CHECK')
@@ -219,26 +234,38 @@ def stage3_export(args, env, ppo_runner, run_dir_name, exp_name, tag=''):
     actor_critic.eval()
     actor_critic.cpu()
     targets = mirror_paths(exp_name, run_dir_name)
+    is_recurrent = hasattr(actor_critic, 'memory_a')  # [g1-23dof] MLP export path
 
-    # TorchScript via upstream PolicyExporterLSTM
+    # TorchScript (LSTM: upstream PolicyExporterLSTM; MLP: scripted actor)
     jit_tmp = os.path.join(ROOT, '_export_jit')
     export_policy_as_jit(actor_critic, jit_tmp)
-    jit_path_src = os.path.join(jit_tmp, 'policy_lstm_1.pt')
+    jit_name = 'policy_lstm_1.pt' if is_recurrent else 'policy_1.pt'
+    jit_path_src = os.path.join(jit_tmp, jit_name)
+    base_name = jit_name[:-len('.pt')]  # policy_lstm_1 | policy_1
 
     # ONNX
-    onnx_path_src = os.path.join(ROOT, '_export_onnx', 'policy_lstm_1.onnx')
+    onnx_path_src = os.path.join(ROOT, '_export_onnx', base_name + '.onnx')
     os.makedirs(os.path.dirname(onnx_path_src), exist_ok=True)
     onnx_ok = False
     onnx_err = ''
     try:
-        mod = OnnxLSTM(actor_critic)
-        obs0 = torch.zeros(1, actor_critic.memory_a.rnn.input_size)
-        h0 = torch.zeros(1, 1, actor_critic.memory_a.rnn.hidden_size)
-        c0 = torch.zeros_like(h0)
-        torch.onnx.export(
-            mod, (obs0, h0, c0), onnx_path_src,
-            input_names=['obs', 'h0', 'c0'], output_names=['action', 'h', 'c'],
-            opset_version=13, do_constant_folding=True)
+        if is_recurrent:
+            mod = OnnxLSTM(actor_critic)
+            obs0 = torch.zeros(1, actor_critic.memory_a.rnn.input_size)
+            h0 = torch.zeros(1, 1, actor_critic.memory_a.rnn.hidden_size)
+            c0 = torch.zeros_like(h0)
+            torch.onnx.export(
+                mod, (obs0, h0, c0), onnx_path_src,
+                input_names=['obs', 'h0', 'c0'], output_names=['action', 'h', 'c'],
+                opset_version=13, do_constant_folding=True)
+        else:
+            mod = OnnxMLP(actor_critic)
+            obs_dim = actor_critic.actor[0].in_features
+            obs0 = torch.zeros(1, obs_dim)
+            torch.onnx.export(
+                mod, obs0, onnx_path_src,
+                input_names=['obs'], output_names=['action'],
+                opset_version=13, do_constant_folding=True)
         onnx_ok = True
     except Exception as e:  # noqa: BLE001
         onnx_err = repr(e)
@@ -248,14 +275,19 @@ def stage3_export(args, env, ppo_runner, run_dir_name, exp_name, tag=''):
     torch.manual_seed(0)
     np.random.seed(0)
     T = 100
-    obs_dim = actor_critic.memory_a.rnn.input_size
+    obs_dim = actor_critic.memory_a.rnn.input_size if is_recurrent \
+        else actor_critic.actor[0].in_features
     stream = torch.rand(T, 1, obs_dim) * 2 - 1
     with torch.no_grad():
-        actor_critic.memory_a.hidden_states = None  # zero-initialize memory
+        if is_recurrent:
+            actor_critic.memory_a.hidden_states = None  # zero-initialize memory
         out_torch = torch.cat([actor_critic.act_inference(stream[t:t + 1, 0]) for t in range(T)])
     jit_mod = torch.jit.load(jit_path_src)
-    jit_mod.reset_memory()
-    out_jit = torch.cat([jit_mod(stream[t:t + 1, 0]) for t in range(T)])
+    if is_recurrent:
+        jit_mod.reset_memory()
+        out_jit = torch.cat([jit_mod(stream[t:t + 1, 0]) for t in range(T)])
+    else:
+        out_jit = torch.cat([jit_mod(stream[t:t + 1, 0]) for t in range(T)])
     diff_jit = float((out_torch - out_jit).abs().max())
     report = {'jit_vs_torch_max_abs_diff': diff_jit,
               'jit_pass_lt_1e-5': bool(diff_jit < 1e-5), 'onnx_ok': onnx_ok}
@@ -271,14 +303,19 @@ def stage3_export(args, env, ppo_runner, run_dir_name, exp_name, tag=''):
                 import onnxruntime as ort
             sess = ort.InferenceSession(onnx_path_src)
             # build inputs as plain python lists -> np.asarray (avoids broken torch<->numpy bridge)
-            hid = actor_critic.memory_a.rnn.hidden_size
-            h_np = np.zeros((1, 1, hid), dtype=np.float32)
-            c_np = np.zeros((1, 1, hid), dtype=np.float32)
+            if is_recurrent:
+                hid = actor_critic.memory_a.rnn.hidden_size
+                h_np = np.zeros((1, 1, hid), dtype=np.float32)
+                c_np = np.zeros((1, 1, hid), dtype=np.float32)
             outs = []
             for t in range(T):
                 obs_np = np.asarray(stream[t][0].tolist(), dtype=np.float32).reshape(1, -1)
-                a, h_np, c_np = sess.run(None, {'obs': obs_np, 'h0': h_np, 'c0': c_np})
-                outs.append(a)
+                if is_recurrent:
+                    a, h_np, c_np = sess.run(None, {'obs': obs_np, 'h0': h_np, 'c0': c_np})
+                    outs.append(a)
+                else:
+                    a = sess.run(None, {'obs': obs_np})[0]
+                    outs.append(a)
             # [g1-baseline] avoid torch.tensor(ndarray): broken numpy bridge on this image
             out_onnx = torch.tensor([[float(x) for x in a[0]] for a in outs])
             diff_onnx = float((out_torch - out_onnx).abs().max())
@@ -293,6 +330,10 @@ def stage3_export(args, env, ppo_runner, run_dir_name, exp_name, tag=''):
     interface_params = {
         'dof_names': list(env.dof_names),
         'num_dof': int(env.num_dof),
+        'obs_dim': int(env.num_obs),
+        'obs_layout': ('[cmd(3)|ang_vel(3)|gravity(3)|dof_pos-default(23)|dof_vel(23)|prev_action(23)]'
+                       if not is_recurrent and env.num_obs == 78 else 'see INTERFACE.md'),
+        'policy_recurrent': bool(is_recurrent),
         'default_dof_pos': env.default_dof_pos.squeeze(0).cpu(),
         'dof_pos_limits': env.dof_pos_limits.cpu(),
         'torque_limits': env.torque_limits.cpu(),
@@ -325,13 +366,13 @@ def stage3_export(args, env, ppo_runner, run_dir_name, exp_name, tag=''):
     os.makedirs(out_top, exist_ok=True)
     for t in targets + [out_top]:
         os.makedirs(t, exist_ok=True)
-        shutil.copy2(jit_path_src, os.path.join(t, 'policy_lstm_1{}.pt'.format(suffix)))
+        shutil.copy2(jit_path_src, os.path.join(t, base_name + '{}.pt'.format(suffix)))
         torch.save({'interface_params': interface_params}, os.path.join(t, 'interface_params{}.pt'.format(suffix)))
         if onnx_ok:
-            shutil.copy2(onnx_path_src, os.path.join(t, 'policy_lstm_1{}.onnx'.format(suffix)))
+            shutil.copy2(onnx_path_src, os.path.join(t, base_name + '{}.onnx'.format(suffix)))
             with open(onnx_path_src, 'rb') as f:
                 torch.save({'onnx_bytes': f.read(), 'jit_vs_torch_max_abs_diff': diff_jit,
-                            'report': report}, os.path.join(t, 'policy_lstm_1{}_onnx.pt'.format(suffix)))
+                            'report': report}, os.path.join(t, base_name + '{}_onnx.pt'.format(suffix)))
         torch.save({'export_report': report}, os.path.join(t, 'export_report{}.pt'.format(suffix)))
     print('[gm] artifacts mirrored to', targets + [out_top])
     return report
