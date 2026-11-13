@@ -123,10 +123,7 @@ class G1_23dofCfg( LeggedRobotCfg ):
         base_height_target = 0.78
 
         class scales( LeggedRobotCfg.rewards.scales ):
-            # [g1-23dof] tracking 1.0 -> 1.5: v4@5000it reached standing (no-fall 95%)
-            # but velocity tracking lagged (RMSE 0.657); stronger positive tracking
-            # pull accelerates walking emergence (positive term, no floor-clip risk).
-            tracking_lin_vel = 1.5
+            tracking_lin_vel = 1.0  # [g1-23dof] v5 (1.5) plateaued at ep_len 64 — reverted
             tracking_ang_vel = 0.5
             lin_vel_z = -2.0
             ang_vel_xy = -0.05
@@ -140,7 +137,11 @@ class G1_23dofCfg( LeggedRobotCfg ):
             # reward 0.0, lr collapsed to 2e-5, ep_len declined 26->15 over 500 iters).
             dof_acc = -1.0e-7
             dof_vel = -5e-4
-            feet_air_time = 1.0     # [g1-23dof] free-form gait reward (no phase clock in obs)
+            # [g1-23dof] free-form gait reward (no phase clock in obs). 1.0 -> 2.0 in v6:
+            # only active when |cmd|>0.1 (standing path untouched — v4 lesson);
+            # strengthens stepping incentive, the clock-less equivalent of the 12-DoF
+            # task's phase-locked contact reward that drove its fast gait emergence.
+            feet_air_time = 2.0
             collision = 0.0
             action_rate = -0.005
             dof_pos_limits = -5.0
