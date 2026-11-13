@@ -33,7 +33,10 @@ def decompose(env, actions_fn, label, n_steps=30):
             env.step(a)
             step_tot = 0.0
             for name, fn in zip(env.reward_names, env.reward_functions):
-                v = float((fn() * env.reward_scales[name]).mean())
+                x = fn()
+                if not torch.is_tensor(x):
+                    x = torch.full((env.num_envs,), float(x), dtype=torch.float, device=env.device)
+                v = float((x * env.reward_scales[name]).mean())
                 sums[name] += v
                 step_tot += v
             tot += step_tot
