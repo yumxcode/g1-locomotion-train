@@ -40,7 +40,7 @@ def decompose(env, actions_fn, label, n_steps=30):
                 sums[name] += v
                 step_tot += v
             tot += step_tot
-            steps_alive.append(float(env.episode_length_buf.mean()))
+            steps_alive.append(float(env.episode_length_buf.float().mean()))
     print('[diag] ==== %s: per-term time-mean over %d steps (scale incl. dt) ====' % (label, n_steps))
     for name in sorted(sums, key=lambda k: sums[k]):
         print('[diag]   %-22s %+.5f' % (name, sums[name] / n_steps))
