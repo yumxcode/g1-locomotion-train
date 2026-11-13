@@ -100,7 +100,12 @@ class G1_23dofCfg( LeggedRobotCfg ):
         foot_name = "ankle_roll"
         penalize_contacts_on = ["hip", "knee"]
         terminate_after_contacts_on = ["pelvis", "torso"]
-        self_collisions = 0 # 1 to disable, 0 to enable...bitwise filter
+        # [g1-23dof] self-collisions DISABLED (=1, the legged_gym framework default).
+        # G1's upper arm sits flush against the torso contour at the zero pose; with
+        # self-collision enabled, random-action arm offsets press the shoulder into the
+        # torso with 200-500 N (diag TASK_20261113_009), which lands on the termination
+        # body torso_link and resets every episode within ~2 policy steps.
+        self_collisions = 1 # 1 to disable, 0 to enable...bitwise filter
         flip_visual_attachments = False
 
     class rewards( LeggedRobotCfg.rewards ):
