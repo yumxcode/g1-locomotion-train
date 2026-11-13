@@ -23,8 +23,7 @@ def main():
     args = get_args()
     env, _ = task_registry.make_env(name=args.task, args=args)
 
-    body_names = [env.gym.get_actor_rigid_body_name(env.envs[0], env.actor_handles[0], i)
-                  for i in range(env.num_bodies)]
+    body_names = list(env.gym.get_actor_rigid_body_names(env.envs[0], env.actor_handles[0]))
     print('[diag] num_bodies', env.num_bodies, 'num_dof', env.num_dof)
     print('[diag] bodies:', body_names)
     print('[diag] termination bodies:', [body_names[i] for i in env.termination_contact_indices.tolist()])
