@@ -49,6 +49,30 @@ Base: upstream `G1RoughCfg` (unitree_rl_gym@276801e) with these changes:
 PPO (rsl_rl v1.0.2 defaults): adaptive lr (desired KL 0.01), γ 0.99, λ 0.95, clip 0.2,
 entropy 0.01, 5 epochs, 4 minibatches, 24 steps/env, 4096 envs, episode 20 s.
 
+### 3.5 Whole-table diff vs the proven-learnable 12-DoF config (mandatory vs free variables)
+
+The 12-DoF task (upstream `G1RoughCfg`, reached RMSE 0.161 by ~2000 it) is the only
+proven-learnable reference in this repo. Diff of every changed dimension, classified:
+
+| Dimension | 12-DoF (learnable) | 23-DoF (ours) | Class |
+|---|---|---|---|
+| robot / DoF count | g1_12dof, 12 joints | g1_23dof_rev_1_0, 23 joints | **contract-mandatory** |
+| observation | 47-dim [ang_vel, grav, cmd, dof×3, sin/cos **gait clock**] | 78-dim contract order, **no clock** | **contract-mandatory** |
+| policy | LSTM(64)+MLP[32] | MLP [128, 64] | **contract-mandatory** (stateless) |
+| PD | hip 100 / knee 150 / ankle 40, kd 2-4 | uniform 60 / 1.5 | **contract-mandatory** (v0 item 9) |
+| action limit clip | none | clip to joint limits | **contract-mandatory** (v0 item 8) |
+| armature | 0 (no arms) | 0.01 | **numerical necessity** (explicit-PD stability, §5-C) |
+| self-collision | on (harmless w/o arms) | off | **necessity** (§5-A) |
+| gait shaping | **phase-locked `contact` 0.18 with observed clock** | `feet_air_time` 1.0→2.0 (v6), command-gated | **free variable** — the 12-DoF's fast gait emergence is driven by the clock prior, which the contract forbids in obs; feet_air_time is its only contract-compatible equivalent |
+| alive | 0.15 | 1.0 | **free variable** (23-joint penalty mass requires it, §5-B) |
+| dof_acc / dof_vel / action_rate | −2.5e-7 / −1e-3 / −0.01 | −1e-7 / −5e-4 / −0.005 | **free variable** (halved to restore per-robot penalty mass) |
+| tracking_lin_vel | 1.0 | 1.0 (v5 tried 1.5 → plateaued, reverted) | **free variable** |
+| episode length / commands / PPO hparams | 20 s / ±1 @10 s / defaults | same | unchanged |
+
+Mechanism conclusion: with the clock forbidden by the contract, gait must emerge from
+feet_air_time + tracking alone; v6 (feet_air_time 2.0) is the single strongest
+contract-compatible lever, empirically 2.87× faster to standing than v4 at it2000.
+
 ## 4. Runs, cost ledger, artifacts
 
 Rate: 1×4090D 24G = ¥5.76/h (goodsId ESKU000001). All costs from `gm task info` runtime.
@@ -66,7 +90,11 @@ Rate: 1×4090D 24G = ¥5.76/h (goodsId ESKU000001). All costs from `gm task info
 | TASK_20261113_029/030/034/038 | diagnostics (reward decomposition) | ~2-3 min each | ~1.2 | f164291…d4f059a | isolated dof_vel −0.046/step chatter |
 | TASK_20261113_041 | kd=5 experiment-diag | ~2 min | ~0.2 | 0e55686 | kd=5 WORSE (−0.096) → explicit-PD instability confirmed |
 | TASK_20261113_042 | armature=0.01 mechanism gate | ~2 min | ~0.2 | 4f14510 | **PASS**: standing +0.023/step, chatter ×1/1000 |
-| **TASK_20261113_043** | **full baseline v4 (5000 it)** | _TBD_ | _TBD_ | 4f14510 | _TBD_ |
+| **TASK_20261113_043** | **full baseline v4 (5000 it)** | 4193 s | 6.72 | 4f14510 | finished; **no-fall 95.26% ✅ / RMSE 0.657 ❌**; jit 0.0 / onnx 7.6e-6 |
+| TASK_20261113_095 | resume-from-5000 attempt | ~25 min | ~2.4 | 2629246 | FAILED: first PPO update destroyed policy (ep_len 678→46, std 1.69→2.4 entropy spiral) |
+| TASK_20261113_096 | bisect: load-eval platform model_5000 | ~8 min | ~0.8 | 475c70d | **weights proven good** (RMSE 0.654 / no-fall 95.19%, exact reproduction) — resume path at fault |
+| TASK_20261113_113 | full baseline v5 (tracking 1.5, 10000 it) | ~86 min | ~8.3 | ee166fa | FAILED: plateau ep_len≈64 (v4 same-iter ~300-678), stopped at it5050 |
+| **TASK_20261113_124** | **full baseline v6 (feet_air_time 2.0, 10000 it)** | _TBD_ | _TBD_ | 28499a7 | _TBD_ (it2000: ep_len 297 = 2.87× v4 same-iter) |
 
 ### Predecessor attempt (2026-11-12, kept for the record / fallback)
 
