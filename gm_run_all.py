@@ -49,12 +49,19 @@ def mirror_paths(exp_name, run_dir_name):
     ]
 
 
-def stage1_train(args):
+def stage1_train(args, ces_mode=None):
     print('=' * 70)
-    print('STAGE 1: PPO TRAINING')
+    print('STAGE 1: PPO TRAINING' + (' [CES-{}]'.format(ces_mode) if ces_mode else ''))
     print('=' * 70)
     env, env_cfg = task_registry.make_env(name=args.task, args=args)
     ppo_runner, train_cfg = task_registry.make_alg_runner(env=env, name=args.task, args=args)
+    if ces_mode is not None:
+        if args.task != 'g1_23dof_ces':
+            print('[gm] CES mode forces --task=g1_23dof_ces (was {})'.format(args.task))
+            args.task = 'g1_23dof_ces'
+        assert hasattr(ppo_runner.alg, 'ces_mode'), 'runner did not build a CESPPO alg'
+        ppo_runner.alg.ces_mode = ces_mode
+        print('[gm] CES mode: {} (segmented advantages; env/reward frozen v6 + ces_loc)'.format(ces_mode))
 
     exp_name = train_cfg.runner.experiment_name
     run_dir_name = os.path.basename(ppo_runner.log_dir)
@@ -78,6 +85,17 @@ def stage1_train(args):
         dt / max(1, train_cfg.runner.max_iterations)))
     print('[gm] throughput: {:.0f} env-steps/s'.format(
         train_cfg.runner.max_iterations * 24 * env.num_envs / max(dt, 1e-9)))
+    if ces_mode is not None:
+        # [ces] health diagnostics: segment stats from the last iteration and
+        # rolling means of the foot-local reward components (raw, pre-scale).
+        stats = getattr(ppo_runner.alg.storage, 'last_seg_stats', {}) or {}
+        diag = env.ces_diag_flush() if hasattr(env, 'ces_diag_flush') else {}
+        print('[gm] CES segment stats (last iter):', json.dumps(stats))
+        print('[gm] CES reward components (raw means):',
+              json.dumps({k: round(v, 6) for k, v in diag.items()}))
+        bad = [n for n, p in ppo_runner.alg.actor_critic.named_parameters()
+               if torch.isnan(p).any().item()]
+        print('[gm] NaN parameter check:', 'CLEAN' if not bad else 'NaN in {}'.format(bad))
     return env, ppo_runner, train_cfg, run_dir_name
 
 
@@ -399,6 +417,21 @@ def parse_load_ckpts():
     return out
 
 
+def parse_ces_mode():
+    """Extract --ces_mode=a1|a2 from sys.argv (CES-PPO switch, [ces] task)."""
+    mode = None
+    for a in sys.argv[1:]:
+        if a.startswith('--ces_mode='):
+            mode = a[len('--ces_mode='):]
+        elif a == '--ces_mode':
+            print('[gm] --ces_mode requires =a1|a2')
+            sys.exit(2)
+    if mode is not None and mode not in ('a1', 'a2'):
+        print('[gm] --ces_mode must be a1 (event boundaries) or a2 (randomized control)')
+        sys.exit(2)
+    return mode
+
+
 def settle_for_sdk_upload(seconds=150):
     """Give the platform SDK time to detect+upload the artifacts before the task exits."""
     print('[gm] waiting {} s for SDK artifact upload ...'.format(seconds))
@@ -411,6 +444,8 @@ def main():
     # and aborts on unknown arguments
     load_ckpts = parse_load_ckpts()
     sys.argv = [a for a in sys.argv if not a.startswith('--load_ckpt')]
+    ces_mode = parse_ces_mode()
+    sys.argv = [a for a in sys.argv if not a.startswith('--ces_mode')]
     args = get_args()
     if load_ckpts:
         print('=' * 70)
@@ -432,7 +467,7 @@ def main():
         settle_for_sdk_upload()
         return
 
-    env, ppo_runner, train_cfg, run_dir_name = stage1_train(args)
+    env, ppo_runner, train_cfg, run_dir_name = stage1_train(args, ces_mode=ces_mode)
     exp_name = train_cfg.runner.experiment_name
     results, _ = stage2_eval(args, env, ppo_runner, exp_name)
     report = stage3_export(args, env, ppo_runner, run_dir_name, exp_name)
