@@ -49,6 +49,102 @@ def mirror_paths(exp_name, run_dir_name):
     ]
 
 
+def learn_with_early_stop(runner, num_learning_iterations, init_at_random_ep_len=True,
+                          check_at=2500, floor=50.0):
+    """Verbatim copy of OnPolicyRunner.learn with ONE addition: at iteration
+    `check_at` (SPEC v1.1 iteration-2 early-stop gate) the rolling mean episode
+    length (last-100 finished episodes) is compared against `floor`. Still on
+    the <=floor plateau (v6 exploded to ~297 by it2000 / ~712 by it3000) ->
+    stop the arm, save the checkpoint, and let the eval/export stages run on
+    it (no extra paid compute). Returns the gate record for the summary."""
+    import time
+    import statistics
+    from collections import deque
+
+    if runner.log_dir is not None and runner.writer is None:
+        from torch.utils.tensorboard import SummaryWriter
+        runner.writer = SummaryWriter(log_dir=runner.log_dir, flush_secs=10)
+    if init_at_random_ep_len:
+        runner.env.episode_length_buf = torch.randint_like(
+            runner.env.episode_length_buf, high=int(runner.env.max_episode_length))
+    obs = runner.env.get_observations()
+    privileged_obs = runner.env.get_privileged_observations()
+    critic_obs = privileged_obs if privileged_obs is not None else obs
+    obs, critic_obs = obs.to(runner.device), critic_obs.to(runner.device)
+    runner.alg.actor_critic.train()
+
+    ep_infos = []
+    rewbuffer = deque(maxlen=100)
+    lenbuffer = deque(maxlen=100)
+    cur_reward_sum = torch.zeros(runner.env.num_envs, dtype=torch.float, device=runner.device)
+    cur_episode_length = torch.zeros(runner.env.num_envs, dtype=torch.float, device=runner.device)
+
+    stopped = False
+    ep_len_at_check = None
+    tot_iter = runner.current_learning_iteration + num_learning_iterations
+    for it in range(runner.current_learning_iteration, tot_iter):
+        start = time.time()
+        with torch.inference_mode():
+            for i in range(runner.num_steps_per_env):
+                actions = runner.alg.act(obs, critic_obs)
+                obs, privileged_obs, rewards, dones, infos = runner.env.step(actions)
+                critic_obs = privileged_obs if privileged_obs is not None else obs
+                obs, critic_obs, rewards, dones = (obs.to(runner.device), critic_obs.to(runner.device),
+                                                   rewards.to(runner.device), dones.to(runner.device))
+                runner.alg.process_env_step(rewards, dones, infos)
+
+                if runner.log_dir is not None:
+                    if 'episode' in infos:
+                        ep_infos.append(infos['episode'])
+                    cur_reward_sum += rewards
+                    cur_episode_length += 1
+                    new_ids = (dones > 0).nonzero(as_tuple=False)
+                    rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().tolist())
+                    lenbuffer.extend(cur_episode_length[new_ids][:, 0].cpu().tolist())
+                    cur_reward_sum[new_ids] = 0
+                    cur_episode_length[new_ids] = 0
+
+            stop = time.time()
+            collection_time = stop - start
+
+            start = stop
+            runner.alg.compute_returns(critic_obs)
+
+        mean_value_loss, mean_surrogate_loss = runner.alg.update()
+        stop = time.time()
+        learn_time = stop - start
+        if runner.log_dir is not None:
+            runner.log({'ep_infos': ep_infos, 'it': it, 'mean_value_loss': mean_value_loss,
+                        'mean_surrogate_loss': mean_surrogate_loss,
+                        'collection_time': collection_time, 'learn_time': learn_time,
+                        'rewbuffer': rewbuffer, 'lenbuffer': lenbuffer,
+                        'num_learning_iterations': num_learning_iterations})
+        if it % runner.save_interval == 0:
+            runner.save(os.path.join(runner.log_dir, 'model_{}.pt'.format(it)))
+        ep_infos.clear()
+
+        if (it + 1) == check_at:
+            ep_len_at_check = float(statistics.mean(lenbuffer)) if len(lenbuffer) else -1.0
+            verdict = ep_len_at_check <= floor
+            print('[gm] EARLY-STOP GATE iter {}: mean ep_len (last {} eps) = {:.1f} '
+                  '(v6 reference: it2000 ~297) floor={} -> {}'.format(
+                      it + 1, len(lenbuffer), ep_len_at_check, floor,
+                      'STOP ARM' if verdict else 'CONTINUE'))
+            if verdict:
+                stopped = True
+                runner.save(os.path.join(runner.log_dir, 'model_{}.pt'.format(it + 1)))
+                print('[gm] EARLY-STOPPED at iter {} (checkpoint saved; eval/export proceed)'.format(it + 1))
+                break
+
+    if stopped:
+        runner.current_learning_iteration = check_at
+    else:
+        runner.current_learning_iteration += num_learning_iterations
+        runner.save(os.path.join(runner.log_dir, 'model_{}.pt'.format(runner.current_learning_iteration)))
+    return {'stopped': stopped, 'check_iter': check_at, 'floor': floor,
+            'ep_len_at_check': ep_len_at_check}
+
+
 def stage1_train(args, ces_mode=None):
     print('=' * 70)
     print('STAGE 1: PPO TRAINING' + (' [CES-{}]'.format(ces_mode) if ces_mode else ''))
@@ -56,12 +152,16 @@ def stage1_train(args, ces_mode=None):
     env, env_cfg = task_registry.make_env(name=args.task, args=args)
     ppo_runner, train_cfg = task_registry.make_alg_runner(env=env, name=args.task, args=args)
     if ces_mode is not None:
-        if args.task != 'g1_23dof_ces':
-            print('[gm] CES mode forces --task=g1_23dof_ces (was {})'.format(args.task))
-            args.task = 'g1_23dof_ces'
+        if args.task not in ('g1_23dof_ces', 'g1_23dof_ces2'):
+            print('[gm] CES mode forces --task=g1_23dof_ces2 (was {})'.format(args.task))
+            args.task = 'g1_23dof_ces2'
         assert hasattr(ppo_runner.alg, 'ces_mode'), 'runner did not build a CESPPO alg'
         ppo_runner.alg.ces_mode = ces_mode
-        print('[gm] CES mode: {} (segmented advantages; env/reward frozen v6 + ces_loc)'.format(ces_mode))
+        print('[gm] CES mode: {} (segmented advantages; task={})'.format(ces_mode, args.task))
+        # [ces2] live evidence of the effective reward table (post dt-scaling,
+        # zero scales popped): the estimator-only task must show NO ces_loc key.
+        print('[gm] effective reward scales:', json.dumps(
+            {k: float(v) for k, v in sorted(env.reward_scales.items())}))
 
     exp_name = train_cfg.runner.experiment_name
     run_dir_name = os.path.basename(ppo_runner.log_dir)
@@ -77,8 +177,14 @@ def stage1_train(args, ces_mode=None):
 
     ppo_runner.save = save_and_mirror
     t0 = os.times().elapsed
-    ppo_runner.learn(num_learning_iterations=train_cfg.runner.max_iterations,
-                     init_at_random_ep_len=True)
+    if ces_mode is None:
+        early_stop = None
+        ppo_runner.learn(num_learning_iterations=train_cfg.runner.max_iterations,
+                         init_at_random_ep_len=True)
+    else:
+        early_stop = learn_with_early_stop(
+            ppo_runner, train_cfg.runner.max_iterations, init_at_random_ep_len=True,
+            check_at=2500, floor=50.0)
     dt = os.times().elapsed - t0
     print('[gm] training wall time: {:.1f} s for {} iterations ({:.2f} s/it)'.format(
         dt, train_cfg.runner.max_iterations,
@@ -96,7 +202,7 @@ def stage1_train(args, ces_mode=None):
         bad = [n for n, p in ppo_runner.alg.actor_critic.named_parameters()
                if torch.isnan(p).any().item()]
         print('[gm] NaN parameter check:', 'CLEAN' if not bad else 'NaN in {}'.format(bad))
-    return env, ppo_runner, train_cfg, run_dir_name
+    return env, ppo_runner, train_cfg, run_dir_name, early_stop
 
 
 def stage2_eval(args, env, ppo_runner, exp_name, tag=''):
@@ -467,11 +573,11 @@ def main():
         settle_for_sdk_upload()
         return
 
-    env, ppo_runner, train_cfg, run_dir_name = stage1_train(args, ces_mode=ces_mode)
+    env, ppo_runner, train_cfg, run_dir_name, early_stop = stage1_train(args, ces_mode=ces_mode)
     exp_name = train_cfg.runner.experiment_name
     results, _ = stage2_eval(args, env, ppo_runner, exp_name)
     report = stage3_export(args, env, ppo_runner, run_dir_name, exp_name)
-    final = {'eval': results, 'export': report}
+    final = {'eval': results, 'export': report, 'early_stop': early_stop}
     print('[gm] FINAL SUMMARY:', json.dumps(final, indent=2))
     with open(os.path.join(os.getcwd(), 'gm_final_summary.json'), 'w') as f:
         json.dump(final, f, indent=2)

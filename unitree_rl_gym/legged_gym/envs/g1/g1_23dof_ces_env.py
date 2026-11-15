@@ -60,9 +60,13 @@ class G1_23dofCESRobot(G1_23dofRobot):
         duty = cnt.float() / ln.float().clamp(min=1).unsqueeze(1)
         return -(duty - CES_DUTY_TARGET).abs().sum(dim=1)
 
-    def _reward_ces_loc(self):
-        """Foot-local CES reward (SPEC 2) + online debounced segmentation
-        (SPEC 1). Called once per policy step from compute_reward()."""
+    def _ces_step(self):
+        """One step of CES bookkeeping: foot-local reward components (SPEC 2,
+        raw/unscaled) + online debounced segmentation (SPEC 1). Updates the
+        segmentation state and exports extras['ces']. Returns (slip, imp,
+        duty_out); the CALLER decides whether they enter the env reward
+        (iteration-1 task: yes via _reward_ces_loc; iteration-2 estimator-only
+        task: no — reward stays v6 verbatim)."""
         c = self.contact_forces[:, self.feet_indices, 2] > 1.0          # [N,F]
         F3 = self.contact_forces[:, self.feet_indices, :3].clone()      # [N,F,3]
         v_xy = self.feet_vel[:, :, :2]                                  # [N,F,2] world
@@ -138,6 +142,13 @@ class G1_23dofCESRobot(G1_23dofRobot):
         d['switch_rate'] += float(switch.any(dim=1).float().mean())
         d['n'] += 1
 
+        return slip, imp, duty_out
+
+    def _reward_ces_loc(self):
+        """Iteration-1 task: the CES foot-local reward term (SPEC 2) with the
+        segmentation bookkeeping as a side effect. Called once per policy step
+        from compute_reward()."""
+        slip, imp, duty_out = self._ces_step()
         return slip + imp + duty_out
 
     def ces_diag_flush(self):
