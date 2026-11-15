@@ -178,18 +178,20 @@ def learn_sgp(runner, num_learning_iterations, init_at_random_ep_len=True,
             w = runner.writer
             for k in ('l_conc_cmd', 'l_anti_cmd', 'l_conc_pos', 'l_anti_pos', 'beta',
                       'f0_peak_mean', 'f0_eff_mean', 'gphi_f0_mean', 'gphi_loss',
-                      'spectral_term', 'coverage'):
+                      'spectral_term', 'coverage', 'grad_spec_norm', 'grad_ppo_norm'):
                 if m.get(k) is not None:
                     w.add_scalar('Spectral/' + k, float(m[k]), it)
             w.add_scalar('Spectral/n_gated', float(m.get('n_gated') or 0), it)
             if it % 50 == 0 and m.get('active'):
-                print('[sgp] it {} beta {:.4f} | L_conc(cmd/pos) {:.3f}/{:.3f} '
+                print('[sgp] it {} beta {:.4g} | L_conc(cmd/pos) {:.3f}/{:.3f} '
                       'L_anti(cmd/pos) {:.3f}/{:.3f} | f0 peak/eff/gphi {:.2f}/{:.2f}/{:.2f} Hz '
-                      '| gated {}/{} (cov {:.2f}) | spec_term {:.4g} vs surrogate {:.4g}'.format(
+                      '| gated {}/{} (cov {:.2f}) | spec_term {:.4g} vs surrogate {:.4g} '
+                      '| |g_spec| {:.3g} vs |g_ppo| {:.3g}'.format(
                           it, m['beta'], m['l_conc_cmd'], m['l_conc_pos'], m['l_anti_cmd'],
                           m['l_anti_pos'], m['f0_peak_mean'], m['f0_eff_mean'],
                           m['gphi_f0_mean'], m['n_gated'], m['n_valid'], m['coverage'],
-                          m['spectral_term'], mean_surrogate_loss))
+                          m['spectral_term'], mean_surrogate_loss,
+                          m.get('grad_spec_norm') or 0, m.get('grad_ppo_norm') or 0))
         if it % runner.save_interval == 0:
             runner.save(os.path.join(runner.log_dir, 'model_{}.pt'.format(it)))
         ep_infos.clear()

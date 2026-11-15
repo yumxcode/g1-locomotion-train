@@ -105,17 +105,30 @@ def test_no_valid_windows_before_75_steps():
 def test_spectral_step_runs_and_learns():
     alg, ac = make_alg()
     push_synthetic_episode(alg, n_steps=T_W + 5)
-    w0 = ac.actor[0].weight.detach().clone()
     g0 = alg.sgp_gphi.net[0].weight.detach().clone()
     m = alg.sgp_spectral_step(10)
     assert m['active'] and m['n_valid'] == N_ENV and m['n_gated'] == N_ENV
     assert 0 <= m['l_conc_cmd'] <= 12 and 0 <= m['l_anti_cmd'] <= 1
     assert 0.5 <= m['f0_eff_mean'] <= 3.0
     assert math.isfinite(m['spectral_term'])
-    assert not torch.equal(w0, ac.actor[0].weight)          # actor moved
-    assert not torch.equal(g0, alg.sgp_gphi.net[0].weight)  # g_phi moved
-    # magnitude bookkeeping used by the beta analysis
-    assert 'spectral_term' in m and 'surrogate_loss' in alg.sgp_monitor[-1:] or True
+    assert m['grad_spec_norm'] > 0                      # spectral grads computed
+    assert len(alg._spec_grads) > 0                     # injection list ready
+    assert not torch.equal(g0, alg.sgp_gphi.net[0].weight)  # g_phi moved (own opt)
+
+
+def test_injection_adds_gradient():
+    alg, ac = make_alg()
+    push_synthetic_episode(alg, n_steps=T_W + 5)
+    alg.sgp_spectral_step(0)
+    p = next(ac.actor.parameters())
+    p.grad = torch.zeros_like(p)
+    gsum0 = float(p.grad.abs().sum())
+    for q, g in alg._spec_grads:
+        if q is p and p.grad is not None:
+            p.grad += g
+    assert float(p.grad.abs().sum()) > gsum0             # injection is additive
+    # injection scale = beta/(E*M) with E=1, M=1 here -> exactly beta*grad
+    assert len(alg._spec_grads) >= 1
 
 
 def test_gate_blocks_low_command():

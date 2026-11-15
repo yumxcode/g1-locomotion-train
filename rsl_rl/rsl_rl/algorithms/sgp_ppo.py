@@ -24,8 +24,11 @@
 #      the spectral objective to the policy (the physics itself is not
 #      differentiable); the stiff PD (60/1.5) makes q_cmd's spectrum a tight
 #      proxy for the realised dof_pos spectrum (both are monitored).
-#   5. step: (beta(t)*(w_conc*L_conc + w_anti*lambda_a*L_anti) +
-#             w_f0 * MSE(g_phi(c), f0_peak.detach())).backward(); clip; step.
+#   5. GRADIENT INJECTION: the spectral gradient beta*grad(L_spec)/(E*M) is
+#      added to the accumulated gradient of each of the E*M PPO minibatch
+#      steps, so every update applies exactly grad(L_PPO + beta*L_spec)
+#      (SPEC combined objective; beta keeps a monotone effect under Adam).
+#      g_phi trains on its own tiny Adam (peak regression; 1 step/update).
 #
 # Arms: s1 = full (w_conc=1, w_anti=1); s2 = concentration only (1, 0);
 #       s3 = antiphase only (0, 1).
@@ -63,15 +66,14 @@ class SGPPPO(PPO):
         self.sgp_w_f0 = float(sgp_w_f0)
 
         # f0 head + bootstrap (g_phi is NOT part of actor_critic: it never
-        # touches the act path, so the deployed policy is bit-identical to A0)
+        # touches the act path, so the deployed policy is bit-identical to A0;
+        # it has its own tiny optimizer for the peak-regression objective)
         self.sgp_gphi = F0Head().to(self.device)
+        self.sgp_gphi_opt = optim.Adam(self.sgp_gphi.parameters(), lr=1e-3)
         self.sgp_bootstrap = F0Bootstrap(alpha=sgp_f0_ema_alpha, w_ramp=sgp_f0_w_ramp,
                                          device=self.device)
-        # optimizer over actor_critic AND g_phi in one Adam (lr follows the
-        # adaptive-KL schedule exactly like the PPO groups)
-        self.optimizer = optim.Adam(
-            [{'params': self.actor_critic.parameters()},
-             {'params': self.sgp_gphi.parameters()}], lr=self.learning_rate)
+        self.optimizer = optim.Adam(self.actor_critic.parameters(), lr=self.learning_rate)
+        self._spec_grads = []
 
         # env binding (set by gm_run_all_sgp.py before learn; stays None in
         # unit tests / pure-PPO usage -> spectral step is a no-op)
@@ -159,7 +161,8 @@ class SGPPPO(PPO):
                'n_valid': 0, 'n_gated': 0, 'coverage': 0.0, 'active': False,
                'l_conc_cmd': None, 'l_anti_cmd': None, 'l_conc_pos': None,
                'l_anti_pos': None, 'f0_peak_mean': None, 'f0_eff_mean': None,
-               'gphi_f0_mean': None, 'gphi_loss': None, 'spectral_term': 0.0}
+               'gphi_f0_mean': None, 'gphi_loss': None, 'spectral_term': 0.0,
+               'grad_spec_norm': None, 'grad_ppo_norm': None}
         if not self.sgp_bound:
             return out
         valid = self._run_len >= self.sgp_t_w
@@ -219,39 +222,127 @@ class SGPPPO(PPO):
             l_conc_pos = concentration_loss(q_p, pw_p, freqs, f0_eff)[0].mean()
             l_anti_pos = antiphase_loss(q_p, freqs, f0_eff, self.sgp_pairs).mean()
 
-        loss = (out['beta'] * (self.sgp_w_conc * l_conc_cmd +
-                               self.sgp_w_anti * self.sgp_lambda_anti * l_anti_cmd)
-                + self.sgp_w_f0 * gphi_loss)
-        if torch.isfinite(loss):
-            self.optimizer.zero_grad()
-            loss.backward()
-            allp = list(self.actor_critic.parameters()) + list(self.sgp_gphi.parameters())
-            nn.utils.clip_grad_norm_(allp, self.max_grad_norm)
-            self.optimizer.step()
+        spec_loss = (out['beta'] * (self.sgp_w_conc * l_conc_cmd +
+                                    self.sgp_w_anti * self.sgp_lambda_anti * l_anti_cmd))
+        if torch.isfinite(spec_loss) and torch.isfinite(gphi_loss):
+            # [sgp] GRADIENT INJECTION design: the spectral term contributes its
+            # gradient to every one of the E*M PPO optimizer steps, scaled by
+            # 1/(E*M) -> each update applies exactly grad(L_PPO + beta*L_spec)
+            # (the SPEC combined objective), and beta keeps a monotone effect
+            # under Adam (a separate Adam step would unit-normalise the spectral
+            # gradient and make beta nearly meaningless between 1e-4 and 0.5).
+            actor_params = [p for p in self.actor_critic.parameters()]
+            grads = torch.autograd.grad(spec_loss, actor_params,
+                                        allow_unused=True, retain_graph=False)
+            n_steps = max(1, self.num_learning_epochs * self.num_mini_batches)
+            self._spec_grads = [(p, g * (1.0 / n_steps)) for p, g in zip(actor_params, grads)
+                                if g is not None]
+            gnorm = float(torch.sqrt(sum((g * g).sum() for g in grads
+                                         if g is not None)))
+            # g_phi: separate tiny optimizer, regressed onto the data peaks
+            # (never touches the policy's act path)
+            self.sgp_gphi_opt.zero_grad()
+            (self.sgp_w_f0 * gphi_loss).backward()
+            self.sgp_gphi_opt.step()
             out.update(active=True, l_conc_cmd=float(l_conc_cmd),
                        l_anti_cmd=float(l_anti_cmd), l_conc_pos=float(l_conc_pos),
                        l_anti_pos=float(l_anti_pos), f0_peak_mean=float(f0_peak.mean()),
                        f0_eff_mean=float(f0_eff.mean()),
                        gphi_f0_mean=float(gphi_f0.detach().mean()),
-                       gphi_loss=float(gphi_loss),
-                       spectral_term=float(out['beta'] *
-                                           (self.sgp_w_conc * l_conc_cmd +
-                                            self.sgp_w_anti * self.sgp_lambda_anti * l_anti_cmd)))
+                       gphi_loss=float(gphi_loss), grad_spec_norm=gnorm,
+                       spectral_term=float(spec_loss))
         else:  # NaN guard: never poison the run
-            print('[sgp] WARNING: non-finite spectral loss at it {} -> step skipped'.format(it))
+            self._spec_grads = []
+            print('[sgp] WARNING: non-finite spectral loss at it {} -> injection skipped'.format(it))
         self.sgp_last = out
         return out
 
     # ------------------------------------------------------------ update
 
     def update(self):
-        mv, ms = super().update()
-        # the runner passes only iteration count via current_learning_iteration
+        """PPO.update verbatim + spectral gradient injection after each
+        minibatch backward (see the design note in sgp_spectral_step)."""
         it = self.current_it if hasattr(self, 'current_it') else 0
         self.sgp_spectral_step(it)
+        self._spec_grads = getattr(self, '_spec_grads', [])
+
+        mean_value_loss = 0
+        mean_surrogate_loss = 0
+        generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
+        first_ppo_grad_norm = None
+        n_mb = 0
+        for obs_batch, critic_obs_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, \
+            old_mu_batch, old_sigma_batch, hid_states_batch, masks_batch in generator:
+
+            self.actor_critic.act(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
+            actions_log_prob_batch = self.actor_critic.get_actions_log_prob(actions_batch)
+            value_batch = self.actor_critic.evaluate(critic_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[1])
+            mu_batch = self.actor_critic.action_mean
+            sigma_batch = self.actor_critic.action_std
+            entropy_batch = self.actor_critic.entropy
+
+            # KL
+            if self.desired_kl != None and self.schedule == 'adaptive':
+                with torch.inference_mode():
+                    kl = torch.sum(
+                        torch.log(sigma_batch / old_sigma_batch + 1.e-5) + (torch.square(old_sigma_batch) + torch.square(old_mu_batch - mu_batch)) / (2.0 * torch.square(sigma_batch)) - 0.5, axis=-1)
+                    kl_mean = torch.mean(kl)
+
+                    if kl_mean > self.desired_kl * 2.0:
+                        self.learning_rate = max(1e-5, self.learning_rate / 1.5)
+                    elif kl_mean < self.desired_kl / 2.0 and kl_mean > 0.0:
+                        self.learning_rate = min(1e-2, self.learning_rate * 1.5)
+
+                    for param_group in self.optimizer.param_groups:
+                        param_group['lr'] = self.learning_rate
+
+            # Surrogate loss
+            ratio = torch.exp(actions_log_prob_batch - torch.squeeze(old_actions_log_prob_batch))
+            surrogate = -torch.squeeze(advantages_batch) * ratio
+            surrogate_clipped = -torch.squeeze(advantages_batch) * torch.clamp(ratio, 1.0 - self.clip_param,
+                                                                                1.0 + self.clip_param)
+            surrogate_loss = torch.max(surrogate, surrogate_clipped).mean()
+
+            # Value function loss
+            if self.use_clipped_value_loss:
+                value_clipped = target_values_batch + (value_batch - target_values_batch).clamp(-self.clip_param,
+                                                                                                self.clip_param)
+                value_losses = (value_batch - returns_batch).pow(2)
+                value_losses_clipped = (value_clipped - returns_batch).pow(2)
+                value_loss = torch.max(value_losses, value_losses_clipped).mean()
+            else:
+                value_loss = (returns_batch - value_batch).pow(2).mean()
+
+            loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_batch.mean()
+
+            # Gradient step
+            self.optimizer.zero_grad()
+            loss.backward()
+            if n_mb == 0:
+                first_ppo_grad_norm = float(torch.sqrt(sum(
+                    (p.grad * p.grad).sum() for p in self.actor_critic.parameters()
+                    if p.grad is not None)))
+            # [sgp] inject the spectral gradient contribution for this step
+            for p, g in self._spec_grads:
+                if p.grad is not None:
+                    p.grad += g
+            nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
+            self.optimizer.step()
+
+            mean_value_loss += value_loss.item()
+            mean_surrogate_loss += surrogate_loss.item()
+            n_mb += 1
+
+        num_updates = self.num_learning_epochs * self.num_mini_batches
+        mean_value_loss /= num_updates
+        mean_surrogate_loss /= num_updates
+        self.storage.clear()
+
+        self.sgp_last.update(grad_ppo_norm=first_ppo_grad_norm)
         self.sgp_monitor.append({**self.sgp_last,
-                                 'value_loss': float(mv), 'surrogate_loss': float(ms)})
-        return mv, ms
+                                 'value_loss': float(mean_value_loss),
+                                 'surrogate_loss': float(mean_surrogate_loss)})
+        return mean_value_loss, mean_surrogate_loss
 
     # ------------------------------------------------------------ io
 
@@ -259,7 +350,8 @@ class SGPPPO(PPO):
         keys = ['it', 'beta', 'n_valid', 'n_gated', 'coverage', 'active',
                 'l_conc_cmd', 'l_anti_cmd', 'l_conc_pos', 'l_anti_pos',
                 'f0_peak_mean', 'f0_eff_mean', 'gphi_f0_mean', 'gphi_loss',
-                'spectral_term', 'value_loss', 'surrogate_loss']
+                'spectral_term', 'grad_spec_norm', 'grad_ppo_norm',
+                'value_loss', 'surrogate_loss']
         rows = [','.join(keys)]
         for m in self.sgp_monitor:
             rows.append(','.join('' if m.get(k) is None else '{:.6g}'.format(m[k])
