@@ -1,0 +1,22 @@
+{
+  "eval": {
+    "num_episodes": 4096,
+    "episode_length_s": 10.0,
+    "rmse_lin_vel_xy_mean": 0.956027626991272,
+    "rmse_lin_vel_xy_std": 0.20112530887126923,
+    "rmse_lin_vel_xy_max": 1.7671452760696411,
+    "no_fall_rate": 0.0,
+    "num_falls": 4096,
+    "pass_rmse_le_0.3": false,
+    "pass_no_fall_ge_0.9": false,
+    "protocol": "fixed cmds uniform vx,vy,wz in [-1,1]^3 with |v_xy|<0.2 zeroed; base-frame xy velocity; per-episode RMSE over xy dims then mean over episodes; fall = early termination (non-timeout) within 10 s; training domain-rand samples kept per env; obs noise & pushes off",
+    "torch_version": "2.4.1"
+  },
+  "export": {
+    "jit_vs_torch_max_abs_diff": 0.0,
+    "jit_pass_lt_1e-5": true,
+    "onnx_ok": true,
+    "onnx_vs_torch_max_abs_diff": 9.5367431640625e-06,
+    "onnx_pass_lt_1e-5": true
+  }
+}
